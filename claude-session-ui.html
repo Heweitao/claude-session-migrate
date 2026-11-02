@@ -66,7 +66,9 @@
     font-family:var(--mono);font-size:11.5px}
   .side-item .ct{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
   .side-item.active .ct{color:var(--accent-hover)}
-  .side-item .tag{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none}
+  .side-item .tag{width:6px;height:6px;padding:0;margin:0;border:0;border-radius:50%;
+    background:var(--accent);flex:none;display:block}
+  .side-sub{display:none}
   .side-sub{padding:9px 8px 2px;font-size:10px;font-weight:600;color:var(--muted);
     letter-spacing:.06em;text-transform:uppercase}
   .side-foot{padding:9px 14px;border-top:1px solid var(--line-soft);font-size:10.5px;color:var(--muted);line-height:1.55}
@@ -109,7 +111,9 @@
   .title{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .sub{font-family:var(--mono);font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
     white-space:nowrap;margin-top:1px}
-  .acct-cell{width:112px}
+  .acct-cell{width:128px}
+  .cellflags{margin-top:3px;display:flex;gap:4px;flex-wrap:wrap}
+  .cellflags .pill{margin-left:0}
   .adot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;
     vertical-align:middle;flex:none}
   .acct-cell .id{font-family:var(--mono);font-size:11.5px;color:var(--text-2)}
@@ -117,8 +121,8 @@
   .time{width:108px;font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
   .model{width:100px;font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
-  .flags{width:118px;text-align:right;padding-right:8px!important}
-  .act{width:104px;text-align:right;padding-right:14px!important;white-space:nowrap}
+  .flags{width:1%;text-align:right;padding-right:10px!important;white-space:nowrap}
+  .act{width:92px;text-align:right;padding-right:14px!important;white-space:nowrap}
   .detbtn{opacity:.6;padding:0 6px!important}
   tbody tr:hover .detbtn{opacity:1}
   td.c,th.c{text-align:center;width:38px;padding-left:8px!important}
@@ -315,7 +319,6 @@
               <th>Session</th>
               <th>From account</th>
               <th>Last activity</th>
-              <th style="text-align:right;padding-right:8px">Flags</th>
               <th></th>
             </tr>
           </thead>
@@ -440,7 +443,7 @@ function visible(opts) {
   const t0 = r => r.activity || 0;
   const hideCur = S.hideCur && !(opts && opts.ignoreHideCur);
   let rows = S.snap.sessions.filter(s => {
-    if (S.filter && (s.profile !== S.filter.profile || s.account !== S.filter.account)) return false;
+    if (S.filter && s.account !== S.filter.account) return false;
     if (S.project && s.cwd !== S.project) return false;
     if (hideCur && s.current) return false;
     if (q && !(s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)
@@ -513,19 +516,26 @@ function render() {
   $("#dirText").textContent = folderHint.replace(/^\/Users\/[^/]+/, "~");
 
   // sidebar
-  const fkey = S.filter ? `${S.filter.profile}|${S.filter.account}` : null;
+  // accounts are the meaningful identity; a profile is just where the login lives
+  const accMap = new Map();
+  for (const p of s.profiles) {
+    for (const a of p.accounts) {
+      const e = accMap.get(a.id) || { id: a.id, short: a.short, count: 0, profiles: [] };
+      e.count += a.count;
+      e.profiles.push(p.name);
+      accMap.set(a.id, e);
+    }
+  }
+  const accList = [...accMap.values()].sort((x, y) => y.count - x.count);
+  const fkey = S.filter ? S.filter.account : null;
   let html = `<div class="side-item ${!S.filter ? "active" : ""}" data-a="">
     <span class="nm" style="font-family:inherit">All sessions</span><span class="ct">${s.sessions.length}</span></div>`;
-  for (const p of s.profiles) {
-    if (multiProfile()) html += `<div class="side-sub">${esc(p.name)}</div>`;
-    for (const a of p.accounts) {
-      if (a.count === 0 && !a.isCurrent) continue;
-      const k = `${p.name}|${a.id}`;
-      html += `<div class="side-item ${fkey === k ? "active" : ""}" data-p="${esc(p.name)}" data-a="${esc(a.id)}">
-        ${a.isCurrent ? '<span class="tag"></span>' : ""}
-        <span class="nm">${acctDot(a.id)}${esc(a.short)}${a.isCurrent ? " current" : ""}</span>
-        <span class="ct">${a.count}</span></div>`;
-    }
+  for (const a of accList) {
+    if (a.count === 0) continue;   // an empty leftover account is not worth a row
+    html += `<div class="side-item ${fkey === a.id ? "active" : ""}" data-a="${esc(a.id)}"
+        title="in ${esc(a.profiles.join(", "))}">
+      <span class="nm">${acctDot(a.id)}${esc(a.short)}</span>
+      <span class="ct">${a.count}</span></div>`;
   }
   $("#sideList").innerHTML = html + (() => {
     const ps = projects();
@@ -546,7 +556,7 @@ function render() {
         S.project = el.dataset.proj === "__all__" ? "" : el.dataset.proj;
         LS.set("project", S.project);
       } else {
-        S.filter = el.dataset.a ? { profile: el.dataset.p, account: el.dataset.a } : null;
+        S.filter = el.dataset.a ? { account: el.dataset.a } : null;
       }
       render();
     };
@@ -629,9 +639,9 @@ function render() {
           <div class="sub" title="${esc(r.cwd)}">${esc(r.cwd)}</div>
         </td>
         <td class="acct-cell" title="profile ${esc(r.profile)} · space ${esc(r.space.slice(0, 8))}">
-          <div class="id">${acctDot(r.account)}${esc(r.account.slice(0, 8))}</div></td>
+          <div class="id">${acctDot(r.account)}${esc(r.account.slice(0, 8))}</div>
+          ${flags.length ? `<div class="cellflags">${flags.join("")}</div>` : ""}</td>
         <td class="time" title="${new Date(r.activity || 0).toLocaleString()}">${fmtTime(r.activity)}</td>
-        <td class="flags">${flags.join("")}</td>
         <td class="act">
           <button class="btn sm ghost detbtn" data-det="1" title="Open details">Details</button>
           ${inTarget(r) ? "" :
@@ -653,7 +663,7 @@ function render() {
         const allSel = pick.length > 0 && pick.every(r => S.sel.has(skey(r)));
         const selN = pick.filter(r => S.sel.has(skey(r))).length;
         const latest = arr.reduce((m, r) => Math.max(m, r.activity || 0), 0);
-        html += `<tr class="grp" data-cwd="${esc(cwd)}"><td colspan="6"><div class="grphd">
+        html += `<tr class="grp" data-cwd="${esc(cwd)}"><td colspan="5"><div class="grphd">
           <span class="chev ${open ? "open" : ""}">▶</span>
           <input type="checkbox" class="gchk" ${allSel ? "checked" : ""} ${pick.length ? "" : "disabled"}>
           <span class="gname">${esc(folderName(cwd))}</span>
