@@ -367,7 +367,7 @@ const dupIndex = () => {
   return m;
 };
 
-// 目标账号里是否已存在这条会话（同 id 的副本，或同 cliSessionId 的副本）
+// is this session already present in the target account (same id, or same cliSessionId)?
 const existsInTarget = s => S.snap.sessions.some(x =>
   x.account === S.target.account && x.space === S.target.space &&
   (x.id === s.id || (!!s.cliSessionId && x.cliSessionId === s.cliSessionId)));
