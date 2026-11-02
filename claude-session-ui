@@ -164,6 +164,7 @@ class Handler(BaseHTTPRequestHandler):
 
         results = []
         ok_count = 0
+        skipped_count = 0
         journal_items = []
         for item in items:
             prof = item.get("profile")
@@ -183,7 +184,10 @@ class Handler(BaseHTTPRequestHandler):
             r["title"] = s["title"]
             if r.get("ok"):
                 ok_count += 1
-                if r.get("dst") and not dry_run:
+                # an identical file was left alone: nothing happened, so nothing to journal
+                if r.get("skipped"):
+                    skipped_count += 1
+                elif r.get("dst") and not dry_run:
                     journal_items.append({
                         "sid": sid, "title": s["title"], "profile": s["profile"],
                         "src": {"account": s["account"], "space": s["space"]},
@@ -202,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json({
             "ok": True,
-            "summary": {"total": len(items), "ok": ok_count, "failed": len(items) - ok_count},
+            "summary": {"total": len(items), "ok": ok_count, "failed": len(items) - ok_count,
+                         "skipped": skipped_count},
             "target": {"profile": dst_profile, "account": dst_account, "space": dst_space},
             "results": results,
             "batchId": batch["id"] if batch else None,

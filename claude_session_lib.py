@@ -450,6 +450,7 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
 
     existed = dst_file.exists()
     backup = None
+    wrote = False
     if existed:
         try:
             same = dst_file.read_bytes() == src_file.read_bytes()
@@ -457,18 +458,19 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
             same = False
         if same:
             log.append("Identical file already in target, skipped writing")
-            existed = False
         elif force:
             backup = dst_file.with_suffix(f".json.bak-{ts}")
             shutil.copy2(dst_file, backup)
             shutil.copy2(src_file, dst_file)
             log.append(f"Backed up and overwrote: {backup.name}")
+            wrote = True
         else:
             return {"ok": False, "log": log,
                     "error": "Target already has a different file under the same name (use force to overwrite)"}
     else:
         shutil.copy2(src_file, dst_file)
         log.append(f"Wrote {dst_file.name}")
+        wrote = True
 
     # a tombstone file hides the session from the list
     tomb = dst_dir / f"deleted_{session['id'][len('local_'):]}"
@@ -489,7 +491,8 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
     return {
         "ok": True, "log": log, "error": None,
         "dst": str(dst_file),
-        "created": not existed,
+        "created": wrote and not existed,
+        "skipped": not wrote,
         "backup": str(backup) if backup else None,
     }
 

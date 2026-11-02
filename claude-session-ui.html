@@ -1003,11 +1003,15 @@ async function doMigrate(keys, force) {
     })).json();
     if (!j.ok) throw new Error(j.error || "Migration failed");
     closeModal();
-    const { ok, failed } = j.summary;
+    const { ok, failed, skipped } = j.summary;
+    const changed = ok - (skipped || 0);
     S.sel.clear();
-    toast(failed ? `Done: ${ok} migrated, ${failed} failed` : `Migrated ${pl(ok, "session")}`,
-          failed ? "err" : "ok",
-          j.batchId && !failed ? { label: "Undo", fn: () => undo(j.batchId) } : null);
+    let msg;
+    if (failed) msg = `Done: ${changed} migrated, ${failed} failed` + (skipped ? `, ${skipped} unchanged` : "");
+    else if (!changed && skipped) msg = "Already up to date — nothing was written";
+    else msg = `Migrated ${pl(changed, "session")}` + (skipped ? `, ${skipped} unchanged` : "");
+    toast(msg, failed ? "err" : "ok",
+          j.batchId && changed ? { label: "Undo", fn: () => undo(j.batchId) } : null);
     if (failed) showFailures(j.results.filter(x => !x.ok));
     await load();
   } catch (e) {
