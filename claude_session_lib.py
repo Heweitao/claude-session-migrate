@@ -2,33 +2,73 @@
 # -*- coding: utf-8 -*-
 """claude_session_lib — read and migrate Claude Desktop local sessions across accounts.
 
-Layout (macOS):
-    ~/Library/Application Support/Claude/claude-code-sessions/
-        <accountUuid>/<spaceUuid>/local_<sessionUuid>.json    metadata (per account)
-    ~/.claude/projects/<cwd-slug>/<cliSessionId>.jsonl        transcript (shared)
+Layout (macOS). A profile is a data directory; Chromium's --user-data-dir selects it,
+so each profile keeps its own login. The default profile is the app's normal folder,
+extra ones live under ~/.claude-accounts/:
+
+    <app dir>/
+    └── claude-code-sessions/
+        └── <accountUuid>/<spaceUuid>/
+            ├── local_<sessionUuid>.json    metadata (per account + profile)
+            ├── deleted_<sessionUuid>        tombstone
+            └── archived-sessions.idx
+    ~/.claude/projects/<cwd-slug>/<cliSessionId>.jsonl   transcript (shared, global)
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
-APP_DIR = Path.home() / "Library/Application Support/Claude"
-SESS_ROOT = APP_DIR / "claude-code-sessions"
-AGENT_ROOT = APP_DIR / "local-agent-mode-sessions"
-PRESENT_ROOT = APP_DIR / "spaces-present"
+DEFAULT_PROFILE = "default"
+DEFAULT_APP_DIR = Path.home() / "Library/Application Support/Claude"
+PROFILES_ROOT = Path.home() / ".claude-accounts"
+
 PROJECTS_ROOT = Path.home() / ".claude/projects"
-CONFIG_JSON = APP_DIR / "config.json"
-OWNER_JSON = APP_DIR / "cowork-enabled-cli-ops.json"
+JOURNAL_PATH = Path.home() / ".claude" / "session-migrate-journal.json"
+JOURNAL_MAX = 40
 
 
 class MigrateError(Exception):
     pass
+
+
+# --------------------------------------------------------------------------- profiles
+def app_dir(profile: str) -> Path:
+    if not profile or profile == DEFAULT_PROFILE:
+        return DEFAULT_APP_DIR
+    return PROFILES_ROOT / profile
+
+
+def discover_profiles() -> list[str]:
+    """Default profile first, then any directory under ~/.claude-accounts."""
+    names = []
+    if DEFAULT_APP_DIR.is_dir():
+        names.append(DEFAULT_PROFILE)
+    if PROFILES_ROOT.is_dir():
+        for p in sorted(PROFILES_ROOT.iterdir()):
+            if p.is_dir() and not p.name.startswith("."):
+                names.append(p.name)
+    return names
+
+
+def require_profiles() -> list[str]:
+    names = discover_profiles()
+    if not names:
+        raise MigrateError(f"No Claude data directory found (looked in {DEFAULT_APP_DIR})")
+    return names
+
+
+def sess_root(profile: str) -> Path:
+    return app_dir(profile) / "claude-code-sessions"
+
+
+def present_root(profile: str) -> Path:
+    return app_dir(profile) / "spaces-present"
 
 
 # --------------------------------------------------------------------------- basics
@@ -60,26 +100,27 @@ def norm_sid(q: str) -> str:
 
 
 def app_ready() -> bool:
-    return SESS_ROOT.is_dir()
+    return bool(discover_profiles())
 
 
-# --------------------------------------------------------------------------- account / space
-def all_accounts() -> list[str]:
-    if not SESS_ROOT.is_dir():
-        return []
-    return sorted(p.name for p in SESS_ROOT.iterdir() if p.is_dir())
-
-
-def spaces_of(account: str) -> list[str]:
-    base = SESS_ROOT / account
+# --------------------------------------------------------------------------- accounts / spaces
+def all_accounts(profile: str) -> list[str]:
+    base = sess_root(profile)
     if not base.is_dir():
         return []
     return sorted(p.name for p in base.iterdir() if p.is_dir())
 
 
-def space_activity(account: str, space: str) -> float:
+def spaces_of(profile: str, account: str) -> list[str]:
+    base = sess_root(profile) / account
+    if not base.is_dir():
+        return []
+    return sorted(p.name for p in base.iterdir() if p.is_dir())
+
+
+def space_activity(profile: str, account: str, space: str) -> float:
     """Latest write time inside the space, falling back to the directory mtime."""
-    base = SESS_ROOT / account / space
+    base = sess_root(profile) / account / space
     newest = 0.0
     for f in base.glob("local_*.json"):
         try:
@@ -94,37 +135,39 @@ def space_activity(account: str, space: str) -> float:
     return newest
 
 
-def current_account() -> str:
-    cfg = read_json(CONFIG_JSON) or {}
+def current_account(profile: str) -> str:
+    cfg = read_json(app_dir(profile) / "config.json") or {}
     acct = cfg.get("lastKnownAccountUuid")
-    if acct and (SESS_ROOT / acct).is_dir():
+    if acct and (sess_root(profile) / acct).is_dir():
         return acct
-    owner = (read_json(OWNER_JSON) or {}).get("ownerAccountId")
-    if owner and (SESS_ROOT / owner).is_dir():
+    owner = (read_json(app_dir(profile) / "cowork-enabled-cli-ops.json") or {}).get("ownerAccountId")
+    if owner and (sess_root(profile) / owner).is_dir():
         return owner
-    accts = all_accounts()
+    accts = all_accounts(profile)
     if not accts:
-        raise MigrateError(f"No account directories found: {SESS_ROOT}")
-    return max(accts, key=lambda a: max([space_activity(a, s) for s in spaces_of(a)] or [0]))
+        raise MigrateError(f"Profile '{profile}' has no account directories yet.")
+    return max(accts, key=lambda a: max([space_activity(profile, a, s) for s in spaces_of(profile, a)] or [0]))
 
 
-def current_space(account: str) -> str:
-    spaces = spaces_of(account)
+def current_space(profile: str, account: str) -> str:
+    spaces = spaces_of(profile, account)
     if not spaces:
-        raise MigrateError(f"Account {account} has no space directory. Open the Code/Cowork panel in Claude once first.")
-    return max(spaces, key=lambda s: space_activity(account, s))
+        raise MigrateError(
+            f"Account {account} in profile '{profile}' has no space directory. "
+            "Open the Code/Cowork panel in Claude once.")
+    return max(spaces, key=lambda s: space_activity(profile, account, s))
 
 
-def is_current(account: str, space: str) -> bool:
+def is_current(profile: str, account: str, space: str) -> bool:
     try:
-        return account == current_account() and space == current_space(account)
+        return account == current_account(profile) and space == current_space(profile, account)
     except MigrateError:
         return False
 
 
 # --------------------------------------------------------------------------- sessions
-def archived_index(account: str, space: str) -> set[str]:
-    d = read_json(SESS_ROOT / account / space / "archived-sessions.idx") or {}
+def archived_index(profile: str, account: str, space: str) -> set[str]:
+    d = read_json(sess_root(profile) / account / space / "archived-sessions.idx") or {}
     return set(d.get("archived") or [])
 
 
@@ -142,13 +185,14 @@ def transcript_info(cli_id: str, cwd: str) -> dict:
     return {"found": False, "size": 0, "path": None}
 
 
-def _public(account: str, space: str, f: Path, data: dict, arch: set[str]) -> dict:
+def _public(profile: str, account: str, space: str, f: Path, data: dict, arch: set[str]) -> dict:
     sid = f.stem
     cli = data.get("cliSessionId")
     cwd = data.get("cwd") or "-"
     turns = data.get("completedTurns")
     return {
         "id": sid,
+        "profile": profile,
         "title": data.get("title") or "(untitled)",
         "cwd": cwd,
         "model": data.get("model") or "",
@@ -162,18 +206,19 @@ def _public(account: str, space: str, f: Path, data: dict, arch: set[str]) -> di
         "archived": sid in arch,
         "transcript": transcript_info(cli, cwd),
         "file": str(f),
-        "current": is_current(account, space),
+        "current": is_current(profile, account, space),
     }
 
 
 def iter_sessions() -> list[dict]:
     out = []
-    for acct in all_accounts():
-        for space in spaces_of(acct):
-            arch = archived_index(acct, space)
-            for f in sorted((SESS_ROOT / acct / space).glob("local_*.json")):
-                data = read_json(f) or {}
-                out.append(_public(acct, space, f, data, arch))
+    for profile in require_profiles():
+        for acct in all_accounts(profile):
+            for space in spaces_of(profile, acct):
+                arch = archived_index(profile, acct, space)
+                for f in sorted((sess_root(profile) / acct / space).glob("local_*.json")):
+                    data = read_json(f) or {}
+                    out.append(_public(profile, acct, space, f, data, arch))
     out.sort(key=lambda s: s["activity"] or 0, reverse=True)
     return out
 
@@ -184,27 +229,29 @@ def find_session(q: str) -> list[dict]:
             if s["id"] == f"local_{n}" or s["id"] == q or s["cliSessionId"] == n or s["cliSessionId"] == q]
 
 
-def get_session(sid: str) -> dict | None:
+def get_session(sid: str, profile: str | None = None) -> dict | None:
     for s in iter_sessions():
-        if s["id"] == sid:
+        if s["id"] == sid and (profile is None or s["profile"] == profile):
             return s
     return None
 
 
 # --------------------------------------------------------------------------- migration
-def migrate_one(session: dict, dst_account: str, dst_space: str, *,
+def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: str, *,
                 force: bool = False, move: bool = False, dry_run: bool = False) -> dict:
-    """Copy one session's metadata into the target account/space."""
+    """Copy one session's metadata into the target profile/account/space."""
     log: list[str] = []
     src_file = Path(session["file"])
-    dst_dir = SESS_ROOT / dst_account / dst_space
+    src_profile, src_account, src_space = session["profile"], session["account"], session["space"]
+    dst_dir = sess_root(dst_profile) / dst_account / dst_space
     dst_file = dst_dir / src_file.name
 
     if not src_file.is_file():
         return {"ok": False, "log": log, "error": f"Source file missing: {src_file}"}
 
-    if session["account"] == dst_account and session["space"] == dst_space:
-        return {"ok": True, "skipped": True, "log": ["Already in that account/space, skipped"], "error": None}
+    if (src_profile, src_account, src_space) == (dst_profile, dst_account, dst_space):
+        return {"ok": True, "skipped": True,
+                "log": ["Already in that profile/account/space, skipped"], "error": None}
 
     if dry_run:
         log.append(f"Would write {dst_file}")
@@ -229,7 +276,8 @@ def migrate_one(session: dict, dst_account: str, dst_space: str, *,
             shutil.copy2(src_file, dst_file)
             log.append(f"Backed up and overwrote: {backup.name}")
         else:
-            return {"ok": False, "log": log, "error": "Target already has a different file under the same name (use force to overwrite)"}
+            return {"ok": False, "log": log,
+                    "error": "Target already has a different file under the same name (use force to overwrite)"}
     else:
         shutil.copy2(src_file, dst_file)
         log.append(f"Wrote {dst_file.name}")
@@ -243,7 +291,7 @@ def migrate_one(session: dict, dst_account: str, dst_space: str, *,
     if _sync_archive(session, dst_dir):
         log.append("Synced archive state")
 
-    _sync_space_marker(session, dst_account, dst_space, log)
+    _sync_space_marker(session, dst_profile, dst_account, dst_space, log)
 
     if move:
         bak = src_file.with_suffix(f".json.moved-{ts}")
@@ -259,7 +307,7 @@ def migrate_one(session: dict, dst_account: str, dst_space: str, *,
 
 
 def _sync_archive(session: dict, dst_dir: Path) -> bool:
-    src_idx = SESS_ROOT / session["account"] / session["space"] / "archived-sessions.idx"
+    src_idx = sess_root(session["profile"]) / session["account"] / session["space"] / "archived-sessions.idx"
     want = session["id"] in (read_json(src_idx) or {}).get("archived", [])
     dst_idx = dst_dir / "archived-sessions.idx"
     cur = read_json(dst_idx) or {"v": 1, "archived": []}
@@ -277,9 +325,10 @@ def _sync_archive(session: dict, dst_dir: Path) -> bool:
     return changed
 
 
-def _sync_space_marker(session: dict, dst_account: str, dst_space: str, log: list[str]) -> None:
-    src = PRESENT_ROOT / session["account"] / session["space"] / "link-key"
-    dst = PRESENT_ROOT / dst_account / dst_space / "link-key"
+def _sync_space_marker(session: dict, dst_profile: str, dst_account: str, dst_space: str,
+                       log: list[str]) -> None:
+    src = present_root(session["profile"]) / session["account"] / session["space"] / "link-key"
+    dst = present_root(dst_profile) / dst_account / dst_space / "link-key"
     if src.is_file() and not dst.exists():
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -288,37 +337,52 @@ def _sync_space_marker(session: dict, dst_account: str, dst_space: str, log: lis
 
 # --------------------------------------------------------------------------- snapshot (for the UI)
 def snapshot() -> dict:
-    acct = current_account()
-    space = current_space(acct)
     sessions = iter_sessions()
-    accounts = []
-    for a in all_accounts():
-        accs = [s for s in sessions if s["account"] == a]
-        accounts.append({
-            "id": a,
-            "short": a[:8],
-            "isCurrent": a == acct,
-            "count": len(accs),
-            "spaces": [
-                {"id": sp, "short": sp[:8], "count": sum(1 for s in accs if s["space"] == sp),
-                 "isCurrent": a == acct and sp == space}
-                for sp in spaces_of(a)
-            ],
+    profiles = []
+    for name in require_profiles():
+        accts = [s for s in sessions if s["profile"] == name]
+        try:
+            cur_acct = current_account(name)
+            cur_space = current_space(name, cur_acct)
+        except MigrateError:
+            cur_acct, cur_space = None, None
+        accounts = []
+        for a in all_accounts(name):
+            accs = [s for s in accts if s["account"] == a]
+            accounts.append({
+                "id": a,
+                "short": a[:8],
+                "isCurrent": a == cur_acct,
+                "count": len(accs),
+                "spaces": [
+                    {"id": sp, "short": sp[:8],
+                     "count": sum(1 for s in accs if s["space"] == sp),
+                     "isCurrent": a == cur_acct and sp == cur_space}
+                    for sp in spaces_of(name, a)
+                ],
+            })
+        profiles.append({
+            "name": name,
+            "path": str(app_dir(name)),
+            "isDefault": name == DEFAULT_PROFILE,
+            "current": {"account": cur_acct, "space": cur_space},
+            "accounts": accounts,
+            "count": len(accts),
         })
     return {
-        "current": {"account": acct, "space": space},
-        "accounts": accounts,
+        "profiles": profiles,
+        "currentProfile": next((p["name"] for p in profiles if p["isDefault"]),
+                               profiles[0]["name"] if profiles else None),
         "sessions": sessions,
         "claudeRunning": claude_running(),
-        "appDir": str(APP_DIR),
-        "projectsRoot": str(PROJECTS_ROOT),
+        "profilesRoot": str(PROFILES_ROOT),
         "journal": [{"id": b["id"], "ts": b["ts"], "count": len(b["items"]),
                      "target": b.get("target"), "undone": b.get("undone", False)}
                     for b in read_journal()[:5]],
     }
 
 
-# --------------------------------------------------------------------------- session preview
+# --------------------------------------------------------------------------- preview
 _REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S | re.I)
 _NOISE_RE = re.compile(r"<(command-name|command-message|local-command-stdout)>.*?</\1>", re.S | re.I)
 
@@ -398,10 +462,6 @@ def session_preview(session: dict, limit: int = 24) -> dict:
 
 
 # --------------------------------------------------------------------------- journal / undo
-JOURNAL_PATH = Path.home() / ".claude" / "session-migrate-journal.json"
-JOURNAL_MAX = 40
-
-
 def read_journal() -> list[dict]:
     d = read_json(JOURNAL_PATH)
     return d if isinstance(d, list) else []
@@ -456,4 +516,3 @@ def undo_batch(batch_id: str) -> dict:
     batch["undoneAt"] = int(time.time() * 1000)
     write_journal(batches)
     return {"ok": True, "failed": failed, "log": log}
-

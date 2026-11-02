@@ -67,6 +67,8 @@
   .side-item .ct{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
   .side-item.active .ct{color:var(--accent-hover)}
   .side-item .tag{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none}
+  .side-sub{padding:9px 8px 2px;font-size:10px;font-weight:600;color:var(--muted);
+    letter-spacing:.06em;text-transform:uppercase}
   .side-foot{padding:9px 14px;border-top:1px solid var(--line-soft);font-size:10.5px;color:var(--muted);line-height:1.55}
   .side-foot code{font-family:var(--mono);font-size:10px;word-break:break-all}
 
@@ -264,6 +266,7 @@
         <div class="vdiv"></div>
         <div class="tgt">
           <span>Migrate to</span>
+          <select id="toProfile" title="Target profile"></select>
           <select id="toAccount"></select>
           <select id="toSpace"></select>
         </div>
@@ -329,9 +332,16 @@ const S = {
   project: LS.get("project", ""), sort: LS.get("sort", "time"),
   group: LS.get("group", true), collapsed: new Set(LS.get("collapsed", [])),
   sel: new Set(), lastIdx: -1,
-  target: { account: LS.get("toAccount", null), space: null },
+  target: { profile: LS.get("toProfile", null), account: null, space: null },
   busy: false, drawer: null, hover: -1,
 };
+
+// a session is identified by profile + id: the same id can exist in several profiles
+const skey = s => `${s.profile}|${s.id}`;
+const byKey = k => S.snap.sessions.find(s => skey(s) === k);
+const profiles = () => (S.snap ? S.snap.profiles : []);
+const profileOf = n => profiles().find(p => p.name === n);
+const multiProfile = () => profiles().length > 1;
 
 const folderName = cwd => {
   if (!cwd || cwd === "-") return "Unknown folder";
@@ -345,11 +355,13 @@ async function load(silent) {
     const j = await (await fetch("/api/state")).json();
     if (!j.ok) throw new Error(j.error);
     S.snap = j.data;
-    if (!S.target.account || !S.snap.accounts.some(a => a.id === S.target.account))
-      S.target.account = S.snap.current.account;
-    if (!S.target.space) S.target.space = S.snap.current.space;
-    const ids = new Set(S.snap.sessions.map(s => s.id));
-    [...S.sel].forEach(id => { if (!ids.has(id)) S.sel.delete(id); });
+    if (!S.target.profile || !profileOf(S.target.profile)) S.target.profile = S.snap.currentProfile;
+    const tp = profileOf(S.target.profile);
+    if (!tp || !S.target.account || !tp.accounts.some(a => a.id === S.target.account))
+      S.target.account = tp ? (tp.current.account || (tp.accounts[0] || {}).id) : null;
+    if (!S.target.space) S.target.space = tp ? tp.current.space : null;
+    const keys = new Set(S.snap.sessions.map(skey));
+    [...S.sel].forEach(k => { if (!keys.has(k)) S.sel.delete(k); });
     render();
     if (silent && S.drawer) refreshDrawer();
   } catch (e) {
@@ -367,9 +379,13 @@ const dupIndex = () => {
   return m;
 };
 
+// sits exactly where we would migrate it to — not the same thing as "current profile"
+const inTarget = r => r.profile === S.target.profile && r.account === S.target.account
+  && r.space === S.target.space;
+
 // is this session already present in the target account (same id, or same cliSessionId)?
 const existsInTarget = s => S.snap.sessions.some(x =>
-  x.account === S.target.account && x.space === S.target.space &&
+  x.profile === S.target.profile && x.account === S.target.account && x.space === S.target.space &&
   (x.id === s.id || (!!s.cliSessionId && x.cliSessionId === s.cliSessionId)));
 
 const projects = () => {
@@ -382,7 +398,7 @@ function visible() {
   if (!S.snap) return [];
   const q = S.q.trim().toLowerCase();
   let rows = S.snap.sessions.filter(s => {
-    if (S.filter && s.account !== S.filter) return false;
+    if (S.filter && (s.profile !== S.filter.profile || s.account !== S.filter.account)) return false;
     if (S.project && s.cwd !== S.project) return false;
     if (S.hideCur && s.current) return false;
     if (q && !(s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)
@@ -424,23 +440,31 @@ const pl = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 function render() {
   const s = S.snap;
   if (!s) return;
-  $("#curAcct").innerHTML = `Current account <b>${esc(s.current.account.slice(0, 8))}</b>`;
+  const curP = profileOf(s.currentProfile) || s.profiles[0] || { name: "-", current: {} };
+  $("#curAcct").innerHTML = (multiProfile() ? `${esc(curP.name)} · account ` : "Current account ")
+    + `<b>${esc((curP.current.account || "—").slice(0, 8))}</b>`;
   const run = s.claudeRunning;
   $("#runDot").className = "dot" + (run ? " bad" : "");
   $("#runText").textContent = run ? "Claude running" : "Claude not running";
   $("#hideCur").checked = S.hideCur;
   $("#groupBox").checked = S.group;
-  $("#dirText").textContent = s.appDir.replace(/^.*Application Support\//, "");
+  const folderHint = multiProfile() ? s.profilesRoot : ((s.profiles[0] || {}).path || s.profilesRoot);
+  $("#dirText").textContent = folderHint.replace(/^\/Users\/[^/]+/, "~");
 
   // sidebar
-  let html = `<div class="side-item ${S.filter === null ? "active" : ""}" data-acct="">
+  const fkey = S.filter ? `${S.filter.profile}|${S.filter.account}` : null;
+  let html = `<div class="side-item ${!S.filter ? "active" : ""}" data-a="">
     <span class="nm" style="font-family:inherit">All sessions</span><span class="ct">${s.sessions.length}</span></div>`;
-  for (const a of s.accounts) {
-    if (a.count === 0 && !a.isCurrent) continue;
-    html += `<div class="side-item ${S.filter === a.id ? "active" : ""}" data-acct="${esc(a.id)}">
-      ${a.isCurrent ? '<span class="tag"></span>' : ""}
-      <span class="nm">${esc(a.short)}${a.isCurrent ? " current" : ""}</span>
-      <span class="ct">${a.count}</span></div>`;
+  for (const p of s.profiles) {
+    if (multiProfile()) html += `<div class="side-sub">${esc(p.name)}</div>`;
+    for (const a of p.accounts) {
+      if (a.count === 0 && !a.isCurrent) continue;
+      const k = `${p.name}|${a.id}`;
+      html += `<div class="side-item ${fkey === k ? "active" : ""}" data-p="${esc(p.name)}" data-a="${esc(a.id)}">
+        ${a.isCurrent ? '<span class="tag"></span>' : ""}
+        <span class="nm">${esc(a.short)}${a.isCurrent ? " current" : ""}</span>
+        <span class="ct">${a.count}</span></div>`;
+    }
   }
   $("#sideList").innerHTML = html + (() => {
     const ps = projects();
@@ -461,7 +485,7 @@ function render() {
         S.project = el.dataset.proj === "__all__" ? "" : el.dataset.proj;
         LS.set("project", S.project);
       } else {
-        S.filter = el.dataset.acct || null;
+        S.filter = el.dataset.a ? { profile: el.dataset.p, account: el.dataset.a } : null;
       }
       render();
     };
@@ -474,16 +498,32 @@ function render() {
   }
   $("#sortSel").value = S.sort;
 
-  // target account / space
+  // target profile / account / space
+  const pfSel = $("#toProfile");
+  const psig = s.profiles.map(p => p.name).join();
+  if (pfSel.dataset.sig !== psig) {
+    pfSel.innerHTML = s.profiles.map(p =>
+      `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
+    pfSel.dataset.sig = psig;
+  }
+  pfSel.value = S.target.profile || "";
+  pfSel.style.display = multiProfile() ? "" : "none";
+
+  const tgtP = profileOf(S.target.profile);
+  // switching profile invalidates the account choice — fall back to that profile's current one
+  if (!tgtP || !S.target.account || !tgtP.accounts.some(a => a.id === S.target.account)) {
+    S.target.account = tgtP ? (tgtP.current.account || (tgtP.accounts[0] || {}).id) : null;
+    S.target.space = null;
+  }
   const accSel = $("#toAccount");
-  const asig = s.accounts.map(a => a.id).join();
+  const asig = (tgtP ? tgtP.accounts.map(a => a.id).join() : "");
   if (accSel.dataset.sig !== asig) {
-    accSel.innerHTML = s.accounts.map(a =>
+    accSel.innerHTML = (tgtP ? tgtP.accounts : []).map(a =>
       `<option value="${esc(a.id)}">${esc(a.short)}${a.isCurrent ? " (current)" : ""}</option>`).join("");
     accSel.dataset.sig = asig;
   }
-  accSel.value = S.target.account;
-  const acct = s.accounts.find(a => a.id === S.target.account);
+  accSel.value = S.target.account || "";
+  const acct = tgtP ? tgtP.accounts.find(a => a.id === S.target.account) : null;
   const spaces = acct ? acct.spaces : [];
   const spSel = $("#toSpace");
   const ssig = S.target.account + "|" + spaces.map(x => x.id).join();
@@ -499,8 +539,8 @@ function render() {
   spSel.style.display = spaces.length > 1 ? "" : "none";
 
   // table
-  const rows = visible(), dup = dupIndex(), tbody = $("#rows");
-  const tgtAcct = S.target.account;
+  const rows = visible(), tbody = $("#rows");
+  const tgtA = tgtP ? tgtP.accounts.find(a => a.id === S.target.account) : null;
   if (!rows.length) {
     tbody.innerHTML = "";
     const e = $("#empty");
@@ -519,21 +559,21 @@ function render() {
       if (r.current) flags.push('<span class="pill cur">Current</span>');
       if (r.archived) flags.push('<span class="pill arch">Archived</span>');
       if (!r.transcript.found) flags.push('<span class="pill no">No transcript</span>');
-      else if (r.account !== tgtAcct && (dup.get(r.cliSessionId) || []).some(x => x.account === tgtAcct))
-        flags.push('<span class="pill dup" title="Already present in the target account">Exists</span>');
-      const on = S.sel.has(r.id);
-      return `<tr data-id="${esc(r.id)}" data-i="${i}" class="${on ? "sel" : ""} ${S.group ? "g-row" : ""}" tabindex="0">
-        <td class="c"><input type="checkbox" ${on ? "checked" : ""} ${r.current ? "disabled" : ""}></td>
+      else if (existsInTarget(r) && r.id !== (tgtA && tgtA.id))
+        flags.push('<span class="pill dup" title="Already present in the target location">Exists</span>');
+      const on = S.sel.has(skey(r));
+      return `<tr data-key="${esc(skey(r))}" data-i="${i}" class="${on ? "sel" : ""} ${S.group ? "g-row" : ""}" tabindex="0">
+        <td class="c"><input type="checkbox" ${on ? "checked" : ""} ${inTarget(r) ? "disabled" : ""}></td>
         <td class="c-title">
           <div class="title" title="${esc(r.title)}">${esc(r.title)}</div>
           <div class="sub" title="${esc(r.cwd)}">${esc(r.cwd)}</div>
         </td>
         <td class="acct-cell"><div class="id">${esc(r.account.slice(0, 8))}</div>
-          <div class="sp">${esc(r.space.slice(0, 8))}</div></td>
+          <div class="sp">${multiProfile() ? esc(r.profile) + " · " : ""}${esc(r.space.slice(0, 8))}</div></td>
         <td class="time" title="${new Date(r.activity || 0).toLocaleString()}">${fmtTime(r.activity)}</td>
         <td class="model" title="${esc(r.model)}">${esc((r.model || "—").replace(/^claude-/, ""))}</td>
         <td class="flags">${flags.length ? flags.join("") : '<span style="color:#d3ccc4">—</span>'}</td>
-        <td class="act">${r.current ? "" :
+        <td class="act">${inTarget(r) ? "" :
           '<button class="btn sm ghost rowbtn" data-mig="1" title="Migrate to the target account">→</button>'}</td>
       </tr>`;
     };
@@ -548,9 +588,9 @@ function render() {
       }
       for (const [cwd, arr] of groups) {
         const open = !S.collapsed.has(cwd);
-        const pick = arr.filter(r => !r.current);
-        const allSel = pick.length > 0 && pick.every(r => S.sel.has(r.id));
-        const selN = pick.filter(r => S.sel.has(r.id)).length;
+        const pick = arr.filter(r => !inTarget(r));
+        const allSel = pick.length > 0 && pick.every(r => S.sel.has(skey(r)));
+        const selN = pick.filter(r => S.sel.has(skey(r))).length;
         const latest = arr.reduce((m, r) => Math.max(m, r.activity || 0), 0);
         html += `<tr class="grp" data-cwd="${esc(cwd)}"><td colspan="7"><div class="grphd">
           <span class="chev ${open ? "open" : ""}">▶</span>
@@ -570,12 +610,12 @@ function render() {
     // group header: collapse / select whole group
     tbody.querySelectorAll("tr.grp").forEach(tr => {
       const cwd = tr.dataset.cwd, box = tr.querySelector(".gchk");
-      const pick = rows.filter(x => (x.cwd || "-") === cwd && !x.current);
-      const allSel = pick.length > 0 && pick.every(x => S.sel.has(x.id));
-      box.indeterminate = !allSel && pick.some(x => S.sel.has(x.id));
+      const pick = rows.filter(x => (x.cwd || "-") === cwd && !inTarget(x));
+      const allSel = pick.length > 0 && pick.every(x => S.sel.has(skey(x)));
+      box.indeterminate = !allSel && pick.some(x => S.sel.has(skey(x)));
       box.onclick = ev => ev.stopPropagation();
       box.onchange = () => {
-        pick.forEach(x => box.checked ? S.sel.add(x.id) : S.sel.delete(x.id));
+        pick.forEach(x => box.checked ? S.sel.add(skey(x)) : S.sel.delete(skey(x)));
         render();
       };
       tr.querySelector(".grphd").onclick = ev => {
@@ -586,30 +626,30 @@ function render() {
       };
     });
 
-    tbody.querySelectorAll("tr[data-id]").forEach(tr => {
-      const id = tr.dataset.id;
-      const item = S.snap.sessions.find(x => x.id === id);
+    tbody.querySelectorAll("tr[data-key]").forEach(tr => {
+      const k = tr.dataset.key;
+      const item = byKey(k);
       const i = +tr.dataset.i;
       tr.onclick = ev => {
-        if (ev.target.closest("[data-mig]")) { ev.stopPropagation(); singleMigrate(id); return; }
+        if (ev.target.closest("[data-mig]")) { ev.stopPropagation(); singleMigrate(k); return; }
         if (ev.target.tagName === "INPUT") return;
-        if (item && item.current) { openDrawer(id); return; }
+        if (item && inTarget(item)) { openDrawer(k); return; }
         if (ev.shiftKey && S.lastIdx >= 0) {
           const [a, b] = [Math.min(S.lastIdx, i), Math.max(S.lastIdx, i)];
-          const on = !S.sel.has(id);
-          shown.slice(a, b + 1).filter(x => !x.current).forEach(x => on ? S.sel.add(x.id) : S.sel.delete(x.id));
+          const on = !S.sel.has(k);
+          shown.slice(a, b + 1).filter(x => !inTarget(x)).forEach(x => on ? S.sel.add(skey(x)) : S.sel.delete(skey(x)));
         } else {
-          S.sel.has(id) ? S.sel.delete(id) : S.sel.add(id);
+          S.sel.has(k) ? S.sel.delete(k) : S.sel.add(k);
         }
         S.lastIdx = i;
         render();
       };
-      tr.ondblclick = () => openDrawer(id);
+      tr.ondblclick = () => openDrawer(k);
       tr.onkeydown = ev => {
-        const all = [...tbody.querySelectorAll("tr[data-id]")];
+        const all = [...tbody.querySelectorAll("tr[data-key]")];
         const pos = all.indexOf(tr);
         if (ev.key === " ") { ev.preventDefault(); tr.click(); }
-        if (ev.key === "Enter") { ev.preventDefault(); openDrawer(id); }
+        if (ev.key === "Enter") { ev.preventDefault(); openDrawer(k); }
         if (ev.key === "ArrowDown" && all[pos + 1]) { ev.preventDefault(); all[pos + 1].focus(); }
         if (ev.key === "ArrowUp" && all[pos - 1]) { ev.preventDefault(); all[pos - 1].focus(); }
       };
@@ -624,25 +664,27 @@ function render() {
   const shownCnt = S.group ? rows.filter(r => !S.collapsed.has(r.cwd || "-")).length : rows.length;
   $("#statTotal").textContent = `${pl(s.sessions.length, "session")} · showing ${shownCnt}`
     + (S.group ? ` · ${pl(new Set(rows.map(r => r.cwd)).size, "project")}` : "");
-  const a2 = s.accounts.find(a => a.id === S.target.account);
-  $("#statTarget").textContent = a2 ? `Target ${a2.short} / ${(S.target.space || "").slice(0, 8)}` : "";
+  $("#statTarget").textContent = tgtA
+    ? `Target ${multiProfile() ? S.target.profile + " / " : ""}${tgtA.short} / ${(S.target.space || "").slice(0, 8)}`
+    : "";
 
-  const all = $("#allBox"), sel2 = visible().filter(r => !r.current)
+  const all = $("#allBox"), sel2 = visible().filter(r => !inTarget(r))
     .filter(r => !(S.group && S.collapsed.has(r.cwd || "-")));
-  all.checked = sel2.length > 0 && sel2.every(r => S.sel.has(r.id));
-  all.indeterminate = !all.checked && sel2.some(r => S.sel.has(r.id));
+  all.checked = sel2.length > 0 && sel2.every(r => S.sel.has(skey(r)));
+  all.indeterminate = !all.checked && sel2.some(r => S.sel.has(skey(r)));
   all.disabled = sel2.length === 0;
 }
 
 /* ================= preview drawer ================= */
-async function openDrawer(id) {
-  S.drawer = id;
+async function openDrawer(k) {
+  S.drawer = k;
   $("#drawer").classList.add("on");
-  history.replaceState(null, "", "#s=" + id);
-  const s = S.snap.sessions.find(x => x.id === id);
+  history.replaceState(null, "", "#s=" + encodeURIComponent(k));
+  const s = byKey(k);
   if (!s) return;
   $("#dTitle").textContent = s.title;
   $("#dMeta").innerHTML = [
+    (multiProfile() ? `Profile ${s.profile}` : null),
     `Account ${s.account.slice(0, 8)}`, `Space ${s.space.slice(0, 8)}`,
     fmtTime(s.activity), s.model || "—",
     s.turns != null ? `${s.turns} turns` : null,
@@ -652,13 +694,13 @@ async function openDrawer(id) {
   $("#dBody").innerHTML = `<div class="skel" style="width:88%"></div><div class="skel" style="width:64%"></div>
     <div class="skel" style="width:76%"></div>`;
   $("#dHint").textContent = "";
-  const isCur = s.current;
+  const isCur = inTarget(s);
   $("#dMigrate").disabled = isCur;
   $("#dMigrate").textContent = isCur ? "Already in this account" : "Migrate this session";
 
   try {
-    const j = await (await fetch("/api/session?id=" + encodeURIComponent(id))).json();
-    if (S.drawer !== id) return;
+    const j = await (await fetch(`/api/session?id=${encodeURIComponent(s.id)}&profile=${encodeURIComponent(s.profile)}`)).json();
+    if (S.drawer !== k) return;
     if (!j.ok) { $("#dBody").innerHTML = `<div class="dempty">${esc(j.error)}</div>`; return; }
     renderPreview(j.session, j.preview);
   } catch (e) {
@@ -696,11 +738,11 @@ function renderPreview(s, p) {
 
 function refreshDrawer() {
   if (!S.drawer) return;
-  const s = S.snap.sessions.find(x => x.id === S.drawer);
+  const s = byKey(S.drawer);
   if (!s) { closeDrawer(); return; }
   $("#dTitle").textContent = s.title;
-  $("#dMigrate").disabled = s.current;
-  $("#dMigrate").textContent = s.current ? "Already in this account" : "Migrate this session";
+  $("#dMigrate").disabled = inTarget(s);
+  $("#dMigrate").textContent = inTarget(s) ? "Already in this account" : "Migrate this session";
 }
 
 function closeDrawer() {
@@ -715,14 +757,17 @@ $("#hideCur").checked = S.hideCur;
 $("#hideCur").onchange = e => { S.hideCur = e.target.checked; LS.set("hideCur", true); render(); };
 $("#groupBox").onchange = e => { S.group = e.target.checked; LS.set("group", S.group); render(); };
 $("#sortSel").onchange = e => { S.sort = e.target.value; LS.set("sort", S.sort); render(); };
+$("#toProfile").onchange = e => {
+  S.target.profile = e.target.value; S.target.account = null; S.target.space = null;
+  LS.set("toProfile", S.target.profile); render();
+};
 $("#toAccount").onchange = e => {
-  S.target.account = e.target.value; S.target.space = null;
-  LS.set("toAccount", S.target.account); render();
+  S.target.account = e.target.value; S.target.space = null; render();
 };
 $("#toSpace").onchange = e => { S.target.space = e.target.value; render(); };
 $("#allBox").onchange = e => {
-  const rows = visible().filter(r => !r.current && !(S.group && S.collapsed.has(r.cwd || "-")));
-  e.target.checked ? rows.forEach(r => S.sel.add(r.id)) : rows.forEach(r => S.sel.delete(r.id));
+  const rows = visible().filter(r => !inTarget(r) && !(S.group && S.collapsed.has(r.cwd || "-")));
+  e.target.checked ? rows.forEach(r => S.sel.add(skey(r))) : rows.forEach(r => S.sel.delete(skey(r)));
   render();
 };
 $("#reloadBtn").onclick = () => load();
@@ -735,7 +780,7 @@ document.addEventListener("keydown", e => {
   if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#q").focus(); }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && document.activeElement.tagName !== "INPUT") {
     e.preventDefault();
-    visible().filter(r => !r.current).forEach(r => S.sel.add(r.id));
+    visible().filter(r => !inTarget(r)).forEach(r => S.sel.add(skey(r)));
     render();
   }
 });
@@ -745,21 +790,19 @@ function modal(html) { $("#modal").innerHTML = html; $("#overlay").classList.add
 function closeModal() { $("#overlay").classList.remove("on"); }
 $("#overlay").onclick = e => { if (e.target.id === "overlay") closeModal(); };
 
-function openConfirm(ids) {
-  if (!ids.length) return;
-  // one session can exist under several accounts; dedupe by id so the count is honest
-  const items = [...new Map(
-    S.snap.sessions.filter(s => ids.includes(s.id)).map(s => [s.id, s])
-  ).values()];
+function openConfirm(keys) {
+  if (!keys.length) return;
+  const items = keys.map(byKey).filter(Boolean);
   const preview = items.slice(0, 12).map(s => `<div title="${esc(s.title)}">${esc(s.title)}</div>`).join("");
   const more = items.length > 12 ? `<div style="color:var(--muted)">… ${items.length - 12} more</div>` : "";
-  const a = S.snap.accounts.find(x => x.id === S.target.account);
+  const tgt = profileOf(S.target.profile);
+  const a = tgt ? tgt.accounts.find(x => x.id === S.target.account) : null;
   const run = S.snap.claudeRunning;
   const clashes = items.filter(existsInTarget);
   const missing = items.filter(s => !s.transcript.found).length;
 
   modal(`
-    <h2>Migrate ${pl(ids.length, "session")}</h2>
+    <h2>Migrate ${pl(items.length, "session")}</h2>
     <div class="mbody">
       ${run ? `<div class="notice"><span>⚠️</span><div>Detected <b>Claude is running</b>. Quit it with ⌘Q first — the running process overwrites disk changes from memory and the migration may be lost.</div></div>` : ""}
       ${clashes.length ? `<div class="notice info"><span>ℹ️</span><div><b>${clashes.length}</b> already exist in the target account.
@@ -767,7 +810,7 @@ function openConfirm(ids) {
         later turns back to the other account.</div></div>` : ""}
       ${missing ? `<div class="notice"><span>⚠️</span><div><b>${missing}</b> have no transcript jsonl; they may open empty.</div></div>` : ""}
       <div class="kv"><div class="k">Target</div><div class="v">
-        Account <code>${esc(S.target.account.slice(0, 8))}</code> / Space <code>${esc((S.target.space || "").slice(0, 8))}</code>
+        ${multiProfile() ? `Profile <code>${esc(S.target.profile)}</code> / ` : ""}Account <code>${esc((S.target.account || "").slice(0, 8))}</code> / Space <code>${esc((S.target.space || "").slice(0, 8))}</code>
         ${a && a.isCurrent ? '<span class="pill cur" style="margin-left:6px">Current account</span>' : ""}
       </div></div>
       <div class="kv"><div class="k">Sessions</div><div class="v" style="margin-top:2px">
@@ -790,15 +833,17 @@ function openConfirm(ids) {
   const fb = $("#forceBox");
   const ob = $("#overwriteBox");
   if (fb) fb.onchange = () => { $("#confirmBtn").disabled = !fb.checked; };
-  $("#confirmBtn").onclick = () => doMigrate(ids, !!((fb && fb.checked) || (ob && ob.checked)));
+  $("#confirmBtn").onclick = () => doMigrate(keys, !!((fb && fb.checked) || (ob && ob.checked)));
 }
 
-function singleMigrate(id) {
-  const s = S.snap.sessions.find(x => x.id === id);
+function singleMigrate(k) {
+  const s = byKey(k);
   if (!s) return;
   if (s.current) { toast("This session is already in the current account"); return; }
-  if (s.account === S.target.account && s.space === S.target.space) { toast("Already in the target location"); return; }
-  if (S.snap.claudeRunning) { openConfirm([id]); return; }
+  if (s.profile === S.target.profile && s.account === S.target.account && s.space === S.target.space) {
+    toast("Already in the target location"); return;
+  }
+  if (S.snap.claudeRunning) { openConfirm([k]); return; }
   const exists = existsInTarget(s);
   modal(`
     <h2>Migrate “${esc(s.title)}”</h2>
@@ -815,10 +860,10 @@ function singleMigrate(id) {
       <button class="btn primary" id="confirmBtn">Migrate</button>
     </div>`);
   $("#cancelBtn").onclick = closeModal;
-  $("#confirmBtn").onclick = () => doMigrate([id], exists);
+  $("#confirmBtn").onclick = () => doMigrate([k], exists);
 }
 
-async function doMigrate(ids, force) {
+async function doMigrate(keys, force) {
   S.busy = true;
   const b = $("#confirmBtn");
   if (b) { b.disabled = true; b.textContent = "Migrating…"; }
@@ -827,7 +872,13 @@ async function doMigrate(ids, force) {
     const j = await (await fetch("/api/migrate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, force, toAccount: S.target.account, toSpace: S.target.space }),
+      body: JSON.stringify({
+        items: keys.map(k => { const x = byKey(k); return { profile: x.profile, id: x.id }; }),
+        force,
+        toProfile: S.target.profile,
+        toAccount: S.target.account,
+        toSpace: S.target.space,
+      }),
     })).json();
     if (!j.ok) throw new Error(j.error || "Migration failed");
     closeModal();
@@ -898,13 +949,13 @@ setInterval(() => { if (!S.busy && !document.hidden) load(true); }, 15000);
 // deep link: #s=<sessionId> opens that preview
 window.addEventListener("hashchange", () => {
   const m = location.hash.match(/^#s=(.+)$/);
-  if (m && S.snap && S.snap.sessions.some(x => x.id === m[1])) openDrawer(m[1]);
+  if (m && S.snap) { const k = decodeURIComponent(m[1]); if (byKey(k)) openDrawer(k); }
 });
 (async () => {
   const m = location.hash.match(/^#s=(.+)$/);
   if (!m) return;
   for (let i = 0; i < 20 && !S.snap; i++) await new Promise(r => setTimeout(r, 100));
-  if (S.snap && S.snap.sessions.some(x => x.id === m[1])) openDrawer(m[1]);
+  if (S.snap) { const k = decodeURIComponent(m[1]); if (byKey(k)) openDrawer(k); }
 })();
 </script>
 </body>

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# claude-profile — run Claude Desktop with per-account data directories.
+#
+# Claude keeps its login in a cookie jar inside its data directory, so one
+# directory = one saved login. Pointing the app at another directory with
+# Chromium's --user-data-dir switch gives you a second, permanently signed-in
+# instance that can run side by side with the first.
+#
+#   claude-profile list            show profiles and their size
+#   claude-profile new work        create a profile, then log in once
+#   claude-profile open work       launch that profile (new instance)
+#   claude-profile open            launch the default profile
+#   claude-profile path work       print the profile directory
+#   claude-profile rm work         delete a profile (asks first)
+
+set -euo pipefail
+
+BASE="${CLAUDE_PROFILES_DIR:-$HOME/.claude-accounts}"
+APP="/Applications/Claude.app"
+BIN="$APP/Contents/MacOS/Claude"
+DEFAULT_DIR="$HOME/Library/Application Support/Claude"
+
+die() { printf 'Error: %s\n' "$1" >&2; exit 1; }
+
+need_app() {
+  [[ -x "$BIN" ]] || die "Claude Desktop not found at $APP"
+}
+
+profile_dir() {
+  local name="$1"
+  [[ -n "$name" ]] || die "profile name required"
+  [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]] || die "profile names may only contain letters, digits, dot, dash, underscore"
+  printf '%s/%s' "$BASE" "$name"
+}
+
+human_size() {
+  du -sh "$1" 2>/dev/null | cut -f1
+}
+
+cmd_list() {
+  printf '%-14s %-8s %s\n' "PROFILE" "SIZE" "PATH"
+  printf '%-14s %-8s %s\n' "default" "$(human_size "$DEFAULT_DIR")" "$DEFAULT_DIR"
+  if [[ -d "$BASE" ]]; then
+    for d in "$BASE"/*/; do
+      [[ -d "$d" ]] || continue
+      printf '%-14s %-8s %s\n' "$(basename "$d")" "$(human_size "$d")" "${d%/}"
+    done
+  fi
+}
+
+cmd_new() {
+  local dir; dir="$(profile_dir "${1:-}")"
+  [[ -e "$dir" ]] && die "profile already exists: $dir"
+  mkdir -p "$dir"
+  echo "Created $dir"
+  echo "Next: claude-profile open $(basename "$dir")  → then sign in once."
+}
+
+cmd_open() {
+  need_app
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    open -n -a "$APP"
+    echo "Opening default profile."
+    return
+  fi
+  local dir; dir="$(profile_dir "$name")"
+  [[ -d "$dir" ]] || die "no such profile: $name (use 'claude-profile new $name')"
+  # -n = new instance, --args forwards the data directory to Chromium
+  open -n -a "$APP" --args --user-data-dir="$dir"
+  echo "Opening profile '$name' → $dir"
+}
+
+cmd_path() {
+  if [[ -z "${1:-}" ]]; then echo "$DEFAULT_DIR"; else profile_dir "$1"; fi
+}
+
+cmd_rm() {
+  local name="${1:-}"
+  [[ "$name" == "default" || -z "$name" ]] && die "refusing to delete the default profile"
+  local dir; dir="$(profile_dir "$name")"
+  [[ -d "$dir" ]] || die "no such profile: $name"
+  read -r -p "Delete $dir and its saved login? [y/N] " reply
+  [[ "$reply" == [yY] ]] || { echo "Aborted."; exit 0; }
+  rm -rf "$dir"
+  echo "Deleted $dir"
+}
+
+case "${1:-list}" in
+  list|ls)      cmd_list ;;
+  new|create)   cmd_new "${2:-}" ;;
+  open|start)   cmd_open "${2:-}" ;;
+  path)         cmd_path "${2:-}" ;;
+  rm|delete)    cmd_rm "${2:-}" ;;
+  -h|--help|help)
+    awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"
+    ;;
+  *) die "unknown command: $1 (try 'claude-profile help')" ;;
+esac

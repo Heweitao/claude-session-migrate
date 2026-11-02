@@ -3,20 +3,23 @@
 """
 claude-session-migrate
 ======================
-Move a Claude Desktop (macOS) local session into the currently signed-in account.
+Move a Claude Desktop (macOS) local session into another account or profile.
 
-A local session's metadata is stored under a two-level, account-scoped path:
-    ~/Library/Application Support/Claude/claude-code-sessions/
-        <accountUuid>/<spaceUuid>/local_<sessionUuid>.json
-The transcript lives in ~/.claude/projects/<cwd-slug>/<cliSessionId>.jsonl and is
-NOT account-scoped, so migrating only copies the small metadata JSON.
+Two levels of scoping are involved:
+
+    <profile>/claude-code-sessions/<accountUuid>/<spaceUuid>/local_<sessionUuid>.json
+
+A profile is a data directory — the default one is ~/Library/Application Support/Claude,
+extra ones (each with its own saved login) live under ~/.claude-accounts/. The transcript
+is NOT scoped at all: it sits in ~/.claude/projects/<cwd-slug>/<cliSessionId>.jsonl, so
+migrating only copies the small metadata JSON.
 
 Usage
 -----
-    claude-session-migrate where                  # print current account/space
-    claude-session-migrate list [--account PREFIX]
+    claude-session-migrate where                  # resolved account/space per profile
+    claude-session-migrate list [--profile NAME] [--account PREFIX]
     claude-session-migrate migrate <id> [--dry-run] [--move] [--force]
-    claude-session-migrate migrate <id> --to-account <UUID> --to-space <UUID>
+    claude-session-migrate migrate <id> --to-profile work --to-account <UUID>
 
 <id> accepts local_xxx / xxx / cliSessionId.
 Quit Claude with ⌘Q first, otherwise the running process may overwrite the change.
@@ -49,46 +52,54 @@ def fmt_ts(ms) -> str:
 
 
 def cmd_where(_a) -> int:
-    acct = lib.current_account()
-    space = lib.current_space(acct)
-    print(f"App dir        : {lib.APP_DIR}")
-    print(f"Current account: {acct}")
-    print(f"Current space  : {space}")
-    print(f"Session store  : {lib.SESS_ROOT / acct / space}")
-    print(f"Claude running : {'yes (quit with ⌘Q first)' if lib.claude_running() else 'no'}")
-    print("\nKnown accounts:")
-    sessions = lib.iter_sessions()
-    for a in lib.all_accounts():
-        n = sum(1 for s in sessions if s["account"] == a)
-        mark = "  <- current" if a == acct else ""
-        print(f"  {a}  ({n} sessions){mark}")
+    profiles = lib.require_profiles()
+    for name in profiles:
+        tag = " (default)" if name == lib.DEFAULT_PROFILE else ""
+        print(f"=== profile {name}{tag}")
+        print(f"  dir            : {lib.app_dir(name)}")
+        try:
+            acct = lib.current_account(name)
+            space = lib.current_space(name, acct)
+            print(f"  current account: {acct}")
+            print(f"  current space  : {space}")
+            print(f"  session store  : {lib.sess_root(name) / acct / space}")
+        except lib.MigrateError as e:
+            print(f"  ! {e}")
+        n = len(lib.all_accounts(name))
+        print(f"  accounts       : {n}")
+    print(f"\nClaude running : {'yes (quit with ⌘Q first)' if lib.claude_running() else 'no'}")
     return 0
 
 
 def cmd_list(args) -> int:
-    acct = lib.current_account()
     rows = lib.iter_sessions()
+    if args.profile:
+        rows = [r for r in rows if r["profile"] == args.profile]
     if args.account:
         rows = [r for r in rows if r["account"].startswith(args.account)]
     if not rows:
         print("No local sessions found.")
         return 0
 
-    cur = None
+    cur_profile = cur_acct = None
     for r in rows:
-        if r["account"] != cur:
-            cur = r["account"]
-            tag = " [current account]" if cur == acct else ""
-            print(f"\n=== account {cur}{tag} ===")
+        if r["profile"] != cur_profile:
+            cur_profile = r["profile"]
+            print(f"\n### profile {cur_profile}")
+            cur_acct = None
+        if r["account"] != cur_acct:
+            cur_acct = r["account"]
+            mark = " [current]" if r["current"] else ""
+            print(f"  == account {cur_acct}{mark}")
         flags = []
         if r["archived"]:
             flags.append("archived")
         if not r["transcript"]["found"]:
             flags.append("no transcript")
         flag = f"  [{', '.join(flags)}]" if flags else ""
-        print(f"  {fmt_ts(r['activity'])}  {r['id']}{flag}")
-        print(f"     {r['title']}")
-        print(f"     {r['cwd']}  ·  {r['model'] or '-'}  ·  space {r['space'][:8]}")
+        print(f"    {fmt_ts(r['activity'])}  {r['id']}{flag}")
+        print(f"       {r['title']}")
+        print(f"       {r['cwd']}  ·  {r['model'] or '-'}  ·  space {r['space'][:8]}")
     print()
     return 0
 
@@ -97,18 +108,27 @@ def cmd_migrate(args) -> int:
     hits = lib.find_session(args.session_id)
     if not hits:
         die(f"Session not found: {args.session_id} (matched sessionId / cliSessionId)")
+
+    dst_profile = args.to_profile or lib.DEFAULT_PROFILE
+    if dst_profile not in lib.discover_profiles():
+        die(f"No such profile: {dst_profile} (known: {', '.join(lib.discover_profiles())})")
+
     if len(hits) > 1:
-        dst_acct = args.to_account or lib.current_account()
-        hits.sort(key=lambda r: (r["account"] == dst_acct, -(r["activity"] or 0)))
+        # prefer a copy outside the target profile, then the most recent one
+        hits.sort(key=lambda r: (r["profile"] == dst_profile, -(r["activity"] or 0)))
         warn(f"{len(hits)} sessions share that id, using: {hits[0]['file']}")
 
     src = hits[0]
-    dst_acct = args.to_account or lib.current_account()
-    dst_space = args.to_space or lib.current_space(dst_acct)
+    try:
+        dst_account = args.to_account or lib.current_account(dst_profile)
+        dst_space = args.to_space or lib.current_space(dst_profile, dst_account)
+    except lib.MigrateError as e:
+        die(str(e))
 
     print(f"Session: {src['title']}")
-    print(f"From   : account {src['account']} / space {src['space']}  ({fmt_ts(src['activity'])})")
-    print(f"To     : account {dst_acct} / space {dst_space}")
+    print(f"From   : profile {src['profile']} / account {src['account']} / space {src['space']}"
+          f"  ({fmt_ts(src['activity'])})")
+    print(f"To     : profile {dst_profile} / account {dst_account} / space {dst_space}")
     t = src["transcript"]
     if t["found"]:
         print(f"Body   : {t['path']}  ({t['size']/1024:.1f} KB)  [shared, no need to move]")
@@ -125,45 +145,49 @@ def cmd_migrate(args) -> int:
     if running and not args.force:
         die("Aborted. Quit Claude and retry, or pass --force to write anyway.")
 
-    res = lib.migrate_one(src, dst_acct, dst_space, force=args.force, move=args.move)
+    res = lib.migrate_one(src, dst_profile, dst_account, dst_space,
+                          force=args.force, move=args.move)
     for line in res["log"]:
         print(f"  - {line}")
     if not res["ok"]:
         die(res["error"] or "Migration failed")
-    print("\nDone. Start Claude and check the Code/Cowork list under the current account.")
+    print("\nDone. Start Claude and check the Code/Cowork list under the target account.")
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="claude-session-migrate",
-        description="Migrate a Claude Desktop local session into the current account",
+        description="Migrate a Claude Desktop local session into another account or profile",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  claude-session-migrate list\n"
-               "  claude-session-migrate migrate local_cfe09564-726d-4776-b2e5-2e4373914d5f --dry-run\n"
-               "  claude-session-migrate migrate cfe09564-726d-4776-b2e5-2e4373914d5f\n",
+               "  claude-session-migrate migrate local_cfe09564-... --dry-run\n"
+               "  claude-session-migrate migrate cfe09564-... --to-profile work\n",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("where", help="show how the current account/space resolves").set_defaults(func=cmd_where)
+    sub.add_parser("where", help="show how each profile's account/space resolves").set_defaults(func=cmd_where)
 
-    p = sub.add_parser("list", help="list local sessions across all accounts")
+    p = sub.add_parser("list", help="list local sessions across all profiles")
+    p.add_argument("--profile", help="only this profile")
     p.add_argument("--account", help="only this account (UUID prefix)")
     p.set_defaults(func=cmd_list)
 
-    p = sub.add_parser("migrate", help="migrate the given session into the current account")
+    p = sub.add_parser("migrate", help="migrate the given session into a target account")
     p.add_argument("session_id", help="sessionId / local_xxx / cliSessionId")
-    p.add_argument("--to-account", help="target account UUID (default: current)")
-    p.add_argument("--to-space", help="target space UUID (default: current)")
+    p.add_argument("--to-profile", help="target profile (default: 'default')")
+    p.add_argument("--to-account", help="target account UUID (default: that profile's current)")
+    p.add_argument("--to-space", help="target space UUID (default: that account's current)")
     p.add_argument("--move", action="store_true", help="rename the source file to .moved-<ts> afterwards")
-    p.add_argument("--force", action="store_true", help="write even if Claude is running or the target conflicts")
+    p.add_argument("--force", action="store_true",
+                   help="write even if Claude is running or the target conflicts")
     p.add_argument("--dry-run", action="store_true", help="only print the plan")
     p.set_defaults(func=cmd_migrate)
 
     args = ap.parse_args()
     if not lib.app_ready():
-        die(f"Session directory not found: {lib.SESS_ROOT}")
+        die("No Claude data directory found.")
     return args.func(args)
 
 

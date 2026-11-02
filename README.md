@@ -25,8 +25,8 @@ Worse, there is no export/import for local sessions, and the two obvious workaro
 Claude Desktop splits a session into two parts stored in different places:
 
 ```
-~/Library/Application Support/Claude/
-└── claude-code-sessions/
+<profile dir>/                      ← ~/Library/Application Support/Claude by default,
+└── claude-code-sessions/             or ~/.claude-accounts/<name> with a custom --user-data-dir
     ├── <accountA-uuid>/
     │   └── <space-uuid>/
     │       ├── local_<sessionId>.json     ← metadata: what the account's session list reads
@@ -69,6 +69,27 @@ This tool does all four.
 
 **CLI** (`claude-session-migrate`) — same engine, scriptable, with `--dry-run`.
 
+### Profiles: one saved login per account
+
+Claude keeps its login in a cookie inside its data directory, so **one directory = one account that
+stays signed in**. Chromium's `--user-data-dir` switch points the app somewhere else, which means you
+can run a second instance for a second account and never sign in again — both windows open at once.
+
+`claude-profile` is a small wrapper for exactly that:
+
+```bash
+claude-profile new work        # create the profile directory
+claude-profile open work       # launch it, sign in once, done forever
+claude-profile open            # the default instance
+claude-profile list            # profiles and their disk usage
+```
+
+Once a profile exists, this tool treats it as a migration target like any other: pick
+**profile → account → space** in the toolbar, or pass `--to-profile` on the CLI.
+
+Disk warning: a fresh profile re-downloads what it needs. If you use the Cowork VM sandbox in it,
+expect another ~11 GB for the VM image.
+
 ### Install
 
 Requirements: **macOS**, **Claude Desktop** (open its Code/Cowork panel at least once),
@@ -84,6 +105,7 @@ cd claude-session-migrate
 # or put both commands on your PATH
 ln -s "$PWD/claude-session-ui"      ~/.local/bin/
 ln -s "$PWD/claude-session-migrate" ~/.local/bin/
+ln -s "$PWD/claude-profile"         ~/.local/bin/
 ```
 
 ### Usage
@@ -108,6 +130,7 @@ claude-session-migrate list                       # every session, grouped by ac
 claude-session-migrate migrate <id> --dry-run     # show the plan, touch nothing
 claude-session-migrate migrate <id>               # do it
 claude-session-migrate migrate <id> --move        # rename the source to .moved-<ts> afterwards
+claude-session-migrate migrate <id> --to-profile work   # target another profile
 ```
 
 `<id>` accepts `local_<uuid>`, the bare `<uuid>`, or a `cliSessionId` — whatever you have.
@@ -171,8 +194,8 @@ Claude 桌面版把每个账号的 Code / Cowork 会话列表，存在**按账�
 一个会话在磁盘上被拆成两半，放在不同地方：
 
 ```
-~/Library/Application Support/Claude/
-└── claude-code-sessions/
+<profile 目录>/                     ← 默认是 ~/Library/Application Support/Claude，
+└── claude-code-sessions/             用 --user-data-dir 启动时是 ~/.claude-accounts/<名字>
     ├── <账号A-UUID>/
     │   └── <空间-UUID>/
     │       ├── local_<会话ID>.json        ← 元数据：账号的会话列表读的就是它
@@ -213,6 +236,27 @@ Claude 桌面版把每个账号的 Code / Cowork 会话列表，存在**按账�
 
 **命令行**（`claude-session-migrate`）——同一套内核，可脚本化，支持 `--dry-run`。
 
+### 多 profile：每个账号一份登录
+
+Claude 的登录态是数据目录里的一个 cookie，所以**一个目录 = 一个长期登录的账号**。
+Chromium 的 `--user-data-dir` 能把它指到别处，于是你可以为第二个账号开第二个实例，
+两个窗口同时开着，从此不用再登录。
+
+`claude-profile` 就是干这个的：
+
+```bash
+claude-profile new work        # 建目录
+claude-profile open work       # 启动并登录一次，以后一直记住
+claude-profile open            # 默认实例
+claude-profile list            # 列出 profile 与占用
+```
+
+有了 profile，这个工具就把它当成普通迁移目标：工具栏里选 **profile → 账号 → 空间**，
+或者命令行加 `--to-profile`。
+
+磁盘提醒：新 profile 要重新下载自己需要的组件。如果在那边用 Cowork 沙箱，
+VM 镜像还会再占约 11 GB。
+
 ### 安装
 
 需要：**macOS**、**Claude 桌面版**（至少打开过一次 Code/Cowork 面板）、**Python 3.9+**。无第三方依赖。
@@ -227,6 +271,7 @@ cd claude-session-migrate
 # 或者把两个命令装进 PATH
 ln -s "$PWD/claude-session-ui"      ~/.local/bin/
 ln -s "$PWD/claude-session-migrate" ~/.local/bin/
+ln -s "$PWD/claude-profile"         ~/.local/bin/
 ```
 
 ### 使用
@@ -250,6 +295,7 @@ claude-session-migrate list                       # 所有会话，按账号分�
 claude-session-migrate migrate <会话ID> --dry-run # 只看计划，不写任何文件
 claude-session-migrate migrate <会话ID>           # 执行
 claude-session-migrate migrate <会话ID> --move    # 迁完后把源文件改名为 .moved-<ts>
+claude-session-migrate migrate <会话ID> --to-profile work   # 迁到另一个 profile
 ```
 
 `<会话ID>` 支持 `local_<uuid>`、裸 `<uuid>`、或 `cliSessionId`，手上是哪种都行。
