@@ -18,7 +18,9 @@ extra ones live under ~/.claude-accounts/:
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -69,6 +71,158 @@ def sess_root(profile: str) -> Path:
 
 def present_root(profile: str) -> Path:
     return app_dir(profile) / "spaces-present"
+
+
+# --------------------------------------------------------------------------- process / login state
+def running_instances() -> list[dict]:
+    """Every live Claude process, mapped to the profile it was launched with."""
+    out = []
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=8)
+    except Exception:
+        return out
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        pid_s, _, cmd = line.partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        # match argv[0] exactly — a grep or an editor that merely mentions the path is not Claude
+        try:
+            argv = shlex.split(cmd)
+        except ValueError:
+            continue
+        if not argv or not argv[0].endswith("Claude.app/Contents/MacOS/Claude"):
+            continue
+        profile = DEFAULT_PROFILE
+        m = re.search(r"--user-data-dir=(\S+)", cmd)
+        if m:
+            raw = m.group(1).rstrip("/")
+            path = Path(raw)
+            profile = path.name if path.parent == PROFILES_ROOT else raw
+        out.append({"pid": pid, "profile": profile, "command": cmd})
+    return out
+
+
+def profile_running(profile: str) -> bool:
+    return any(i["profile"] == profile for i in running_instances())
+
+
+def any_running() -> bool:
+    return bool(running_instances())
+
+
+def login_state(profile: str) -> dict:
+    """Is there a live .claude.ai sessionKey cookie in this profile?"""
+    jar = app_dir(profile) / "Cookies"
+    cfg = read_json(app_dir(profile) / "config.json") or {}
+    account = cfg.get("lastKnownAccountUuid")
+    if not jar.is_file():
+        return {"loggedIn": False, "expiresAt": None, "account": account, "reason": "no cookie jar"}
+
+    import sqlite3
+    import tempfile
+
+    tmp = None
+    try:
+        # the app holds a lock while running, so read a snapshot instead
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as fh:
+            tmp = fh.name
+            fh.write(jar.read_bytes())
+        con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        row = con.execute(
+            "select expires_utc from cookies where name='sessionKey' and host_key like '%claude.ai'"
+        ).fetchone()
+        con.close()
+        if not row:
+            return {"loggedIn": False, "expiresAt": None, "account": account, "reason": "no sessionKey"}
+        # Chromium stores microseconds since 1601-01-01
+        exp = int(row[0] / 1_000_000 - 11_644_473_600)
+        now = int(time.time())
+        return {"loggedIn": exp > now, "expiresAt": exp * 1000, "account": account,
+                "reason": None if exp > now else "session expired"}
+    except Exception as e:
+        return {"loggedIn": False, "expiresAt": None, "account": account,
+                "reason": f"{type(e).__name__}: {e}"}
+    finally:
+        if tmp:
+            try:
+                Path(tmp).unlink()
+            except OSError:
+                pass
+
+
+def profile_status(profile: str) -> dict:
+    st = {
+        "name": profile,
+        "path": str(app_dir(profile)),
+        "isDefault": profile == DEFAULT_PROFILE,
+        "running": profile_running(profile),
+        "instances": [i["pid"] for i in running_instances() if i["profile"] == profile],
+    }
+    st.update(login_state(profile))
+    try:
+        st["current"] = {"account": current_account(profile)}
+        st["accounts"] = len(all_accounts(profile))
+    except MigrateError:
+        st["current"] = {"account": None}
+        st["accounts"] = 0
+    return st
+
+
+def create_profile(name: str) -> dict:
+    name = (name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", name):
+        return {"ok": False, "error": "Use 1-40 characters: letters, digits, dot, dash, underscore"}
+    if name == DEFAULT_PROFILE:
+        return {"ok": False, "error": "'default' is reserved"}
+    d = PROFILES_ROOT / name
+    if d.exists():
+        return {"ok": False, "error": f"Profile already exists: {d}"}
+    try:
+        d.mkdir(parents=True)
+        PROFILES_ROOT.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "profile": name, "path": str(d)}
+
+
+def open_profile(profile: str) -> dict:
+    if profile not in discover_profiles():
+        return {"ok": False, "error": f"No such profile: {profile}"}
+    app = Path("/Applications/Claude.app")
+    if not app.is_dir():
+        return {"ok": False, "error": "Claude.app not found in /Applications"}
+    cmd = ["open", "-n", "-a", str(app)]
+    if profile != DEFAULT_PROFILE:
+        cmd += ["--args", f"--user-data-dir={app_dir(profile)}"]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=15)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "profile": profile}
+
+
+def quit_profile(profile: str | None = None, timeout: float = 6.0) -> dict:
+    """Graceful SIGTERM; one profile, or every instance when profile is None."""
+    targets = [i for i in running_instances() if profile is None or i["profile"] == profile]
+    if not targets:
+        return {"ok": True, "quit": 0, "pids": []}
+    import signal
+    for i in targets:
+        try:
+            os.kill(i["pid"], signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        left = [i for i in running_instances() if (profile is None or i["profile"] == profile)]
+        if not left:
+            return {"ok": True, "quit": len(targets), "pids": [i["pid"] for i in targets]}
+        time.sleep(0.25)
+    return {"ok": False, "quit": 0, "error": "Claude did not exit in time",
+            "pids": [i["pid"] for i in running_instances() if profile is None or i["profile"] == profile]}
 
 
 # --------------------------------------------------------------------------- basics

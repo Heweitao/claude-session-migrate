@@ -68,6 +68,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)}, 400)
             except Exception as e:
                 self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        elif path == "/api/profiles":
+            try:
+                self._json({
+                    "ok": True,
+                    "profiles": [lib.profile_status(n) for n in lib.discover_profiles()],
+                    "running": lib.running_instances(),
+                })
+            except Exception as e:
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
         elif path == "/api/session":
             sid = (qs.get("id") or [""])[0]
             prof = (qs.get("profile") or [None])[0]
@@ -86,6 +95,25 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception as e:
             self._json({"ok": False, "error": f"Bad request: {e}"}, 400)
+            return
+
+        if path == "/api/profiles/create":
+            r = lib.create_profile(payload.get("name") or "")
+            self._json(r, 200 if r.get("ok") else 400)
+            return
+
+        if path == "/api/profiles/open":
+            r = lib.open_profile(payload.get("profile") or lib.DEFAULT_PROFILE)
+            self._json(r, 200 if r.get("ok") else 400)
+            return
+
+        if path == "/api/quit":
+            if payload.get("all"):
+                r = lib.quit_profile(None)
+            else:
+                prof = payload.get("profile")
+                r = lib.quit_profile(prof) if prof else {"ok": False, "error": "no profile given"}
+            self._json(r, 200 if r.get("ok") else 400)
             return
 
         if path == "/api/undo":

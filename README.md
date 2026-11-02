@@ -84,6 +84,10 @@ claude-profile open            # the default instance
 claude-profile list            # profiles and their disk usage
 ```
 
+The same thing lives in the UI: the **Profiles** button shows each profile's running state, sign-in
+state and expiry, and lets you create, launch or quit them without touching a terminal. A running
+Claude blocks migration, so the confirm dialog offers a *Quit Claude* button right where you need it.
+
 Once a profile exists, this tool treats it as a migration target like any other: pick
 **profile → account → space** in the toolbar, or pass `--to-profile` on the CLI.
 
@@ -250,6 +254,10 @@ claude-profile open work       # 启动并登录一次，以后一直记住
 claude-profile open            # 默认实例
 claude-profile list            # 列出 profile 与占用
 ```
+
+这些在界面里也能做：右上角 **Profiles** 按钮会列出每个 profile 的运行状态、登录状态和到期时间，
+可以直接新建、启动、退出，不用回终端。Claude 在跑会挡住迁移，所以确认框里就带了一个
+*Quit Claude* 按钮。
 
 有了 profile，这个工具就把它当成普通迁移目标：工具栏里选 **profile → 账号 → 空间**，
 或者命令行加 `--to-profile`。

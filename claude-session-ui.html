@@ -194,6 +194,23 @@
     background-size:200% 100%;animation:sh 1.1s infinite;margin:7px 0}
   @keyframes sh{to{background-position:-200% 0}}
 
+  /* ---------- profiles ---------- */
+  .modal.wide{max-width:660px}
+  .pcard{display:flex;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--line);
+    border-radius:9px;margin-bottom:8px;background:var(--surface)}
+  .pmain{flex:1;min-width:0}
+  .pname{font-weight:600;font-size:13px;display:flex;align-items:center;gap:7px}
+  .ppath{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pstat{font-size:11.5px;color:var(--text-2);margin-top:4px;display:flex;align-items:center;
+    gap:6px;flex-wrap:wrap}
+  .pstat .sep{color:#dcd7d1}
+  .pact{display:flex;gap:6px;flex:none}
+  .newprof{display:flex;gap:7px;align-items:center;flex:1;margin-right:10px}
+  .newprof input{flex:1;height:29px;padding:0 9px;border-radius:7px;border:1px solid var(--line);
+    background:var(--surface-2);outline:none;font-size:12.5px;min-width:0}
+  .newprof input:focus{border-color:var(--accent-line);background:#fff}
+
   /* ---------- modal ---------- */
   .overlay{position:fixed;inset:0;background:rgba(31,29,26,.3);backdrop-filter:blur(2px);
     display:none;align-items:center;justify-content:center;z-index:50;padding:24px}
@@ -237,6 +254,7 @@
     <div class="spacer"></div>
     <div class="chip" id="curAcct">Loading…</div>
     <div class="chip"><span class="dot" id="runDot"></span><span id="runText">Checking</span></div>
+    <button class="btn ghost sm" id="profilesBtn">Profiles</button>
     <button class="btn ghost sm" id="reloadBtn">Refresh</button>
   </header>
 
@@ -770,6 +788,7 @@ $("#allBox").onchange = e => {
   e.target.checked ? rows.forEach(r => S.sel.add(skey(r))) : rows.forEach(r => S.sel.delete(skey(r)));
   render();
 };
+$("#profilesBtn").onclick = () => openProfiles();
 $("#reloadBtn").onclick = () => load();
 $("#goBtn").onclick = () => openConfirm([...S.sel]);
 $("#dClose").onclick = closeDrawer;
@@ -786,7 +805,11 @@ document.addEventListener("keydown", e => {
 });
 
 /* ================= modals ================= */
-function modal(html) { $("#modal").innerHTML = html; $("#overlay").classList.add("on"); }
+function modal(html, cls) {
+  $("#modal").className = "modal" + (cls ? " " + cls : "");
+  $("#modal").innerHTML = html;
+  $("#overlay").classList.add("on");
+}
 function closeModal() { $("#overlay").classList.remove("on"); }
 $("#overlay").onclick = e => { if (e.target.id === "overlay") closeModal(); };
 
@@ -804,7 +827,8 @@ function openConfirm(keys) {
   modal(`
     <h2>Migrate ${pl(items.length, "session")}</h2>
     <div class="mbody">
-      ${run ? `<div class="notice"><span>⚠️</span><div>Detected <b>Claude is running</b>. Quit it with ⌘Q first — the running process overwrites disk changes from memory and the migration may be lost.</div></div>` : ""}
+      ${run ? `<div class="notice"><span>⚠️</span><div>Detected <b>Claude is running</b>. Quit it with ⌘Q first — the running process overwrites disk changes from memory and the migration may be lost.
+        <div style="margin-top:7px"><button class="btn sm" id="quitNowBtn">Quit Claude</button></div></div></div>` : ""}
       ${clashes.length ? `<div class="notice info"><span>ℹ️</span><div><b>${clashes.length}</b> already exist in the target account.
         Left alone they are skipped; tick the option below to overwrite their metadata — that is how you push
         later turns back to the other account.</div></div>` : ""}
@@ -830,6 +854,13 @@ function openConfirm(keys) {
     </div>`);
 
   $("#cancelBtn").onclick = closeModal;
+  const qb = $("#quitNowBtn");
+  if (qb) qb.onclick = async () => {
+    qb.disabled = true; qb.textContent = "Quitting…";
+    const r = await quitClaude(null, null);
+    if (r && r.ok) openConfirm(keys);
+    else { qb.disabled = false; qb.textContent = "Quit Claude"; }
+  };
   const fb = $("#forceBox");
   const ob = $("#overwriteBox");
   if (fb) fb.onchange = () => { $("#confirmBtn").disabled = !fb.checked; };
@@ -925,6 +956,125 @@ function showFailures(fails) {
     </div>
     <div class="mfoot"><button class="btn" id="okBtn">Close</button></div>`);
   $("#okBtn").onclick = closeModal;
+}
+
+/* ================= profiles ================= */
+async function openProfiles() {
+  modal(`<h2>Profiles</h2>
+    <div class="mbody" id="profBody">
+      <div class="skel" style="width:70%"></div><div class="skel" style="width:48%"></div>
+      <div class="skel" style="width:62%"></div>
+    </div>
+    <div class="mfoot" style="justify-content:space-between">
+      <div class="newprof">
+        <input id="newProfName" placeholder="new profile name" maxlength="40" autocomplete="off">
+        <button class="btn sm" id="createProfBtn">Create</button>
+      </div>
+      <button class="btn" id="quitAllBtn">Quit all</button>
+    </div>`, "wide");
+  $("#createProfBtn").onclick = createProfile;
+  $("#newProfName").onkeydown = e => { if (e.key === "Enter") createProfile(); };
+  $("#quitAllBtn").onclick = () => quitClaude(null, $("#quitAllBtn"));
+  await refreshProfiles();
+}
+
+async function refreshProfiles() {
+  const body = $("#profBody");
+  if (!body) return;
+  try {
+    const j = await (await fetch("/api/profiles")).json();
+    if (!j.ok) throw new Error(j.error);
+    body.innerHTML = j.profiles.map(p => {
+      const run = p.running
+        ? `<span class="dot"></span> Running${p.instances.length ? ` · pid ${p.instances.join(", ")}` : ""}`
+        : `<span class="dot" style="background:#c9c2ba;box-shadow:none"></span> Not running`;
+      const login = p.loggedIn
+        ? `signed in until ${new Date(p.expiresAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+        : `<span style="color:var(--warn)">not signed in</span>`;
+      const acct = p.current && p.current.account
+        ? `account ${esc(p.current.account.slice(0, 8))}` : "no account yet";
+      return `<div class="pcard">
+        <div class="pmain">
+          <div class="pname">${esc(p.name)}${p.isDefault ? '<span class="pill arch">app folder</span>' : ""}</div>
+          <div class="ppath" title="${esc(p.path)}">${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</div>
+          <div class="pstat">${run}<span class="sep">|</span>${login}<span class="sep">|</span>
+            ${acct}<span class="sep">|</span>${pl(p.accounts, "account")}</div>
+        </div>
+        <div class="pact">
+          <button class="btn sm" data-popen="${esc(p.name)}" ${p.running ? "disabled" : ""}>Open</button>
+          <button class="btn sm" data-pquit="${esc(p.name)}" ${p.running ? "" : "disabled"}>Quit</button>
+        </div>
+      </div>`;
+    }).join("") + `<div style="font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.6">
+      One profile = one saved login; each launches its own Claude instance, so two accounts can run
+      side by side. A new profile re-downloads what it needs — the Cowork VM image alone is ~11 GB.</div>`;
+    body.querySelectorAll("[data-popen]").forEach(b => b.onclick = () => openProfile(b.dataset.popen, b));
+    body.querySelectorAll("[data-pquit]").forEach(b => b.onclick = () => quitClaude(b.dataset.pquit, b));
+  } catch (e) {
+    body.innerHTML = `<div class="notice"><span>⚠️</span><div>${esc(e.message)}</div></div>`;
+  }
+}
+
+async function openProfile(name, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "Opening…"; }
+  try {
+    const j = await (await fetch("/api/profiles/open", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: name }),
+    })).json();
+    if (!j.ok) throw new Error(j.error);
+    toast(`Launching ${name}…`, "ok");
+    setTimeout(() => { refreshProfiles(); load(true); }, 1500);
+  } catch (e) {
+    toast(e.message, "err");
+    if (btn) { btn.disabled = false; btn.textContent = "Open"; }
+  }
+}
+
+async function quitClaude(name, btn) {
+  const restore = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = "Quitting…"; }
+  try {
+    const j = await (await fetch("/api/quit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(name ? { profile: name } : { all: true }),
+    })).json();
+    if (!j.ok) throw new Error(j.error);
+    toast(name ? `Quit ${name}` : "All Claude instances quit", "ok");
+    await new Promise(r => setTimeout(r, 500));
+    await load(true);
+    if ($("#profBody")) await refreshProfiles();
+    return j;
+  } catch (e) {
+    toast(e.message, "err");
+    return null;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = restore || "Quit"; }
+  }
+}
+
+async function createProfile() {
+  const input = $("#newProfName");
+  if (!input) return;
+  const name = (input.value || "").trim();
+  if (!name) { input.focus(); return; }
+  const btn = $("#createProfBtn");
+  btn.disabled = true; btn.textContent = "Creating…";
+  try {
+    const j = await (await fetch("/api/profiles/create", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    })).json();
+    if (!j.ok) throw new Error(j.error);
+    input.value = "";
+    toast(`Created ${name} — launching it, sign in there`, "ok");
+    await refreshProfiles();
+    await openProfile(name, null);
+  } catch (e) {
+    toast(e.message, "err");
+  } finally {
+    btn.disabled = false; btn.textContent = "Create";
+  }
 }
 
 function toast(msg, kind, action) {
