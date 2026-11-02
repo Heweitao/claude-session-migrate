@@ -1,0 +1,7 @@
+# local workspace data — never publish
+.workbuddy/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

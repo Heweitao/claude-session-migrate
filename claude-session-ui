@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+claude-session-ui
+=================
+Local web UI: lists every Claude Desktop local session across all accounts and
+migrates the selected ones into the current account with one click.
+
+Start:
+    claude-session-ui                 # defaults to http://127.0.0.1:8770
+    claude-session-ui --port 9000
+    claude-session-ui --no-open       # do not open a browser
+
+Listens on 127.0.0.1 only; never exposed to the network.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import claude_session_lib as lib  # noqa: E402
+
+HERE = Path(os.path.dirname(os.path.realpath(__file__)))
+HTML_FILE = HERE / "claude-session-ui.html"
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "claude-session-ui"
+
+    # ---------------------------------------------------------------- output
+    def _send(self, code: int, body: bytes, ctype: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, obj, code: int = 200) -> None:
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
+
+    def log_message(self, fmt, *args):
+        pass  # keep the log quiet
+
+    # ---------------------------------------------------------------- routes
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        qs = parse_qs(self.path.split("?")[1] if "?" in self.path else "")
+        if path in ("/", "/index.html"):
+            if not HTML_FILE.is_file():
+                self._send(500, f"UI file missing: {HTML_FILE}".encode("utf-8"), "text/plain; charset=utf-8")
+                return
+            self._send(200, HTML_FILE.read_bytes(), "text/html; charset=utf-8")
+        elif path == "/api/state":
+            try:
+                self._json({"ok": True, "data": lib.snapshot()})
+            except lib.MigrateError as e:
+                self._json({"ok": False, "error": str(e)}, 400)
+            except Exception as e:
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        elif path == "/api/session":
+            sid = (qs.get("id") or [""])[0]
+            s = lib.get_session(sid)
+            if not s:
+                self._json({"ok": False, "error": "Session not found"}, 404)
+                return
+            self._json({"ok": True, "session": s, "preview": lib.session_preview(s)})
+        else:
+            self._send(404, b"not found", "text/plain")
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception as e:
+            self._json({"ok": False, "error": f"Bad request: {e}"}, 400)
+            return
+
+        if path == "/api/undo":
+            batch_id = payload.get("batchId") or ""
+            try:
+                r = lib.undo_batch(batch_id)
+            except Exception as e:
+                r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            self._json(r, 200 if r.get("ok") else 400)
+            return
+
+        if path != "/api/migrate":
+            self._send(404, b"not found", "text/plain")
+            return
+
+        ids = payload.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            self._json({"ok": False, "error": "No sessions selected"}, 400)
+            return
+
+        force = bool(payload.get("force"))
+        move = bool(payload.get("move"))
+        dry_run = bool(payload.get("dryRun"))
+
+        if lib.claude_running() and not force and not dry_run:
+            self._json({"ok": False, "error": "Claude is running. Quit it with ⌘Q first (or choose force write)",
+                        "needForce": True}, 409)
+            return
+
+        try:
+            dst_account = payload.get("toAccount") or lib.current_account()
+            dst_space = payload.get("toSpace") or lib.current_space(dst_account)
+            # the same sessionId may exist in several accounts; prefer a copy outside the target
+            index = {}
+            for s in lib.iter_sessions():
+                cur = index.get(s["id"])
+                if cur is None:
+                    index[s["id"]] = s
+                elif cur["account"] == dst_account and s["account"] != dst_account:
+                    index[s["id"]] = s
+        except lib.MigrateError as e:
+            self._json({"ok": False, "error": str(e)}, 400)
+            return
+
+        results = []
+        ok_count = 0
+        journal_items = []
+        for sid in ids:
+            s = index.get(sid)
+            if not s:
+                results.append({"id": sid, "ok": False, "error": "Session no longer exists (the list may be stale)", "log": []})
+                continue
+            try:
+                r = lib.migrate_one(s, dst_account, dst_space, force=force, move=move, dry_run=dry_run)
+            except Exception as e:
+                r = {"ok": False, "error": f"{type(e).__name__}: {e}", "log": []}
+            r["id"] = sid
+            r["title"] = s["title"]
+            if r.get("ok"):
+                ok_count += 1
+                if r.get("dst") and not dry_run:
+                    journal_items.append({
+                        "sid": sid, "title": s["title"],
+                        "src": {"account": s["account"], "space": s["space"]},
+                        "dst": r["dst"], "created": r.get("created"),
+                        "backup": r.get("backup"),
+                    })
+            results.append(r)
+
+        batch = None
+        if journal_items and not dry_run:
+            try:
+                batch = lib.add_batch({"account": dst_account, "space": dst_space}, journal_items)
+            except Exception as e:
+                print(f"Failed to write migration journal: {e}", file=sys.stderr)
+
+        self._json({
+            "ok": True,
+            "summary": {"total": len(ids), "ok": ok_count, "failed": len(ids) - ok_count},
+            "target": {"account": dst_account, "space": dst_space},
+            "results": results,
+            "batchId": batch["id"] if batch else None,
+            "dryRun": dry_run,
+        })
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="claude-session-ui", description="Local UI for migrating Claude Desktop sessions")
+    ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
+    args = ap.parse_args()
+
+    if not lib.app_ready():
+        print(f"Error: session directory not found: {lib.SESS_ROOT}", file=sys.stderr)
+        print("Make sure Claude Desktop is installed and its Code/Cowork panel has been opened once.",
+              file=sys.stderr)
+        return 1
+    if not HTML_FILE.is_file():
+        print(f"Error: UI file missing: {HTML_FILE}", file=sys.stderr)
+        return 1
+
+    port = args.port
+    for attempt in range(20):
+        try:
+            httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            port += 1
+    else:
+        print("Error: no free port available", file=sys.stderr)
+        return 1
+
+    url = f"http://127.0.0.1:{port}/"
+    print(f"Claude Session Migration UI: {url}", flush=True)
+    print(f"Current account: {lib.current_account()}", flush=True)
+    print("Press Ctrl+C to stop.\n", flush=True)
+    if not args.no_open:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        httpd.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

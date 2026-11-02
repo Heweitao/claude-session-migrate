@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Session Migration</title>
+<style>
+  :root{
+    --bg:#f6f5f3; --surface:#fff; --surface-2:#faf9f7;
+    --line:#e8e5e1; --line-soft:#f1efec;
+    --text:#1f1d1a; --text-2:#57534d; --muted:#8a837a;
+    --accent:#c0603c; --accent-hover:#a9512f; --accent-soft:#fdf2ec; --accent-line:#f0d6c8;
+    --ok:#1a7f45; --warn:#a85912; --warn-soft:#fef6e7; --danger:#b3261e;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --shadow:0 1px 2px rgba(31,29,26,.06),0 8px 24px -12px rgba(31,29,26,.18);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",sans-serif;
+    -webkit-font-smoothing:antialiased;overflow:hidden}
+  button,select,input{font:inherit;color:inherit}
+
+  .app{display:flex;flex-direction:column;height:100vh}
+
+  /* ---------- top bar ---------- */
+  header.top{display:flex;align-items:center;gap:12px;height:52px;padding:0 16px;flex:none;
+    background:var(--surface);border-bottom:1px solid var(--line);-webkit-app-region:drag}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+  .brand .mark{width:22px;height:22px;border-radius:6px;flex:none;display:grid;place-items:center;
+    background:linear-gradient(145deg,var(--accent),#d98a67);color:#fff;font-size:12px;font-weight:700}
+  .top .spacer{flex:1}
+  .chip{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 10px;border-radius:999px;
+    background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--text-2);white-space:nowrap}
+  .chip b{font-weight:600;color:var(--text);font-family:var(--mono);font-size:11.5px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 0 3px rgba(26,127,69,.12)}
+  .dot.bad{background:var(--warn);box-shadow:0 0 0 3px rgba(168,89,18,.14)}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 12px;
+    border-radius:7px;border:1px solid var(--line);background:var(--surface);cursor:pointer;
+    font-size:12.5px;font-weight:500;transition:background .12s,border-color .12s,opacity .12s;white-space:nowrap}
+  .btn:hover:not(:disabled){background:var(--surface-2);border-color:#dcd7d1}
+  .btn:disabled{cursor:not-allowed}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover)}
+  .btn.primary:disabled{background:#e6e2dc;border-color:#e6e2dc;color:#a49d95}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--text-2)}
+  .btn.ghost:hover:not(:disabled){background:var(--surface-2);border-color:var(--line)}
+  .btn.sm{height:26px;padding:0 9px;font-size:12px;border-radius:6px}
+  .btn.danger{color:var(--danger);border-color:#e8d5d3}
+  .btn.danger:hover:not(:disabled){background:#fdf3f2}
+
+  .body{display:flex;flex:1;min-height:0}
+
+  /* ---------- sidebar ---------- */
+  aside.side{width:212px;flex:none;background:var(--surface);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:hidden}
+  .side-head{padding:13px 14px 6px;font-size:10.5px;font-weight:600;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.07em}
+  .side-list{flex:1;overflow-y:auto;padding:0 8px 10px}
+  .side-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;
+    user-select:none;color:var(--text-2);position:relative}
+  .side-item:hover{background:var(--surface-2)}
+  .side-item.active{background:var(--accent-soft);color:var(--accent-hover);font-weight:500}
+  .side-item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-family:var(--mono);font-size:11.5px}
+  .side-item .ct{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .side-item.active .ct{color:var(--accent-hover)}
+  .side-item .tag{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none}
+  .side-foot{padding:9px 14px;border-top:1px solid var(--line-soft);font-size:10.5px;color:var(--muted);line-height:1.55}
+  .side-foot code{font-family:var(--mono);font-size:10px;word-break:break-all}
+
+  /* ---------- main ---------- */
+  main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
+
+  .toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:9px 14px;
+    border-bottom:1px solid var(--line);flex:none;background:var(--surface)}
+  .search{position:relative;flex:1 1 190px;max-width:300px}
+  .search input{width:100%;height:30px;padding:0 10px 0 29px;border-radius:7px;border:1px solid var(--line);
+    background:var(--surface-2);outline:none}
+  .search input:focus{border-color:var(--accent-line);background:#fff;box-shadow:0 0 0 3px rgba(192,96,60,.07)}
+  .search svg{position:absolute;left:9px;top:8.5px;color:var(--muted)}
+  select{height:30px;padding:0 25px 0 9px;border-radius:7px;border:1px solid var(--line);
+    background:var(--surface-2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M2 3.5L5 6.5L8 3.5' stroke='%238a837a' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>") no-repeat right 8px center;
+    -webkit-appearance:none;appearance:none;cursor:pointer;font-size:12.5px;outline:none;max-width:190px;text-overflow:ellipsis}
+  select:focus{border-color:var(--accent-line);background-color:#fff}
+  .chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);cursor:pointer;
+    user-select:none;white-space:nowrap}
+  .chk input{accent-color:var(--accent);width:14px;height:14px;cursor:pointer;margin:0}
+  .vdiv{width:1px;height:20px;background:var(--line);flex:none;margin:0 3px}
+  .grow{flex:1}
+  .tgt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap}
+
+  .tablewrap{flex:1;overflow:auto;position:relative}
+  table{width:100%;border-collapse:separate;border-spacing:0}
+  thead th{position:sticky;top:0;z-index:2;background:var(--surface);text-align:left;
+    font-size:10.5px;font-weight:600;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;
+    padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  tbody tr{cursor:pointer;outline:none}
+  tbody tr:hover{background:var(--surface-2)}
+  tbody tr.sel{background:var(--accent-soft)}
+  tbody tr.sel:hover{background:#fbe9e0}
+  tbody tr:focus-visible{box-shadow:inset 2px 0 0 var(--accent)}
+  tbody td{padding:8px 12px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+  .c-title{max-width:0;width:46%}
+  .title{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sub{font-family:var(--mono);font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;margin-top:1px}
+  .acct-cell{width:112px}
+  .acct-cell .id{font-family:var(--mono);font-size:11.5px;color:var(--text-2)}
+  .acct-cell .sp{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:1px}
+  .time{width:108px;font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .model{width:100px;font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .flags{width:118px;text-align:right;padding-right:8px!important}
+  .act{width:56px;text-align:right;padding-right:14px!important}
+  td.c,th.c{text-align:center;width:38px;padding-left:8px!important}
+  input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer;margin:0}
+
+  .pill{display:inline-flex;align-items:center;height:19px;padding:0 6px;border-radius:5px;
+    font-size:10.5px;font-weight:500;border:1px solid transparent;white-space:nowrap;margin-left:4px}
+  .pill.cur{background:var(--accent-soft);color:var(--accent-hover);border-color:var(--accent-line)}
+  .pill.arch{background:#f3f1ee;color:var(--text-2);border-color:var(--line)}
+  .pill.no{background:var(--warn-soft);color:var(--warn);border-color:#f5e3c4}
+  .pill.dup{background:#f1f5fb;color:#2f4a6d;border-color:#dbe4f0}
+
+  .rowbtn{opacity:0;transition:opacity .1s}
+  tbody tr:hover .rowbtn{opacity:1}
+
+  /* project grouping */
+  tbody tr.grp{cursor:pointer;background:var(--surface-2)}
+  tbody tr.grp:hover{background:#f4f2ef}
+  tbody tr.grp td{padding:0!important;border-bottom:1px solid var(--line)}
+  .grphd{display:flex;align-items:center;gap:8px;padding:6px 12px;min-height:32px}
+  .chev{width:12px;flex:none;color:var(--text-2);font-size:9px;line-height:1;transition:transform .14s}
+  .chev.open{transform:rotate(90deg)}
+  .gname{font-weight:600;font-size:12.5px;white-space:nowrap}
+  .gpath{font-family:var(--mono);font-size:10.5px;color:var(--muted);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;max-width:46%}
+  .gcount{font-size:10.5px;color:var(--muted);background:var(--surface);border:1px solid var(--line);
+    border-radius:9px;padding:1px 7px;flex:none}
+  .gright{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted);
+    white-space:nowrap;flex:none}
+  tbody tr.g-row td.c-title{padding-left:27px}
+  .side-div{height:1px;background:var(--line-soft);margin:8px 6px 0}
+
+  .empty{padding:72px 24px;text-align:center;color:var(--muted)}
+  .empty h3{margin:0 0 6px;font-size:14px;color:var(--text-2);font-weight:600}
+  .empty p{margin:0;font-size:12.5px}
+  .empty button{margin-top:14px}
+
+  .statusbar{flex:none;display:flex;align-items:center;gap:14px;height:31px;padding:0 14px;
+    border-top:1px solid var(--line);background:var(--surface-2);font-size:11.5px;color:var(--muted)}
+  .statusbar .spacer{flex:1}
+
+  /* ---------- preview drawer ---------- */
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:440px;background:var(--surface);
+    border-left:1px solid var(--line);box-shadow:-16px 0 40px -28px rgba(31,29,26,.4);
+    transform:translateX(101%);transition:transform .22s cubic-bezier(.32,.72,0,1);
+    z-index:40;display:flex;flex-direction:column}
+  .drawer.on{transform:none}
+  .dh{padding:13px 16px 11px;border-bottom:1px solid var(--line);flex:none}
+  .dh .t{font-size:14px;font-weight:600;line-height:1.35;padding-right:24px}
+  .dh .close{position:absolute;top:12px;right:12px;width:24px;height:24px;border-radius:6px;border:0;
+    background:transparent;cursor:pointer;color:var(--muted);display:grid;place-items:center;font-size:15px}
+  .dh .close:hover{background:var(--surface-2);color:var(--text)}
+  .dmeta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .tag{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;font-size:10.5px;
+    background:var(--surface-2);border:1px solid var(--line);color:var(--text-2);font-family:var(--mono)}
+  .dbody{flex:1;overflow-y:auto;padding:6px 16px 16px}
+  .dempty{color:var(--muted);font-size:12.5px;padding:20px 0;text-align:center}
+  .firstq{margin:12px 0 4px;padding:9px 11px;border-radius:8px;background:var(--accent-soft);
+    border:1px solid var(--accent-line);font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  .firstq .lbl{display:block;font-size:10px;font-weight:600;color:var(--accent-hover);
+    letter-spacing:.05em;margin-bottom:3px;text-transform:uppercase}
+  .msg{padding:9px 0;border-bottom:1px solid var(--line-soft)}
+  .msg:last-child{border-bottom:0}
+  .msg .who{font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;
+    text-transform:uppercase;margin-bottom:3px}
+  .msg.me .who{color:var(--accent)}
+  .msg .txt{white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.62;color:var(--text-2)}
+  .msg.me .txt{color:var(--text)}
+  .msg.more .txt{cursor:pointer;display:-webkit-box;-webkit-line-clamp:9;-webkit-box-orient:vertical;
+    overflow:hidden;position:relative}
+  .msg.more.open .txt{display:block;overflow:visible}
+  .msg.more:not(.open) .who::after{content:" · click to expand";font-weight:400;letter-spacing:0;
+    text-transform:none;color:var(--muted)}
+  .dfoot{flex:none;padding:10px 16px;border-top:1px solid var(--line);background:var(--surface-2);
+    display:flex;gap:8px;align-items:center}
+  .dfoot .hint{flex:1;font-size:11px;color:var(--muted)}
+  .skel{height:11px;border-radius:4px;background:linear-gradient(90deg,#f2f0ed,#faf8f6,#f2f0ed);
+    background-size:200% 100%;animation:sh 1.1s infinite;margin:7px 0}
+  @keyframes sh{to{background-position:-200% 0}}
+
+  /* ---------- modal ---------- */
+  .overlay{position:fixed;inset:0;background:rgba(31,29,26,.3);backdrop-filter:blur(2px);
+    display:none;align-items:center;justify-content:center;z-index:50;padding:24px}
+  .overlay.on{display:flex}
+  .modal{width:100%;max-width:560px;background:var(--surface);border-radius:12px;box-shadow:var(--shadow);
+    overflow:hidden;display:flex;flex-direction:column;max-height:82vh}
+  .modal h2{margin:0;padding:15px 20px 11px;font-size:15px;font-weight:600}
+  .modal .mbody{padding:0 20px 16px;overflow:auto}
+  .modal .mfoot{display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:11px 20px;
+    border-top:1px solid var(--line);background:var(--surface-2)}
+  .modal .mfoot .left{margin-right:auto;font-size:11.5px;color:var(--muted)}
+  .kv{display:flex;gap:10px;padding:7px 0;font-size:12.5px;border-bottom:1px dashed var(--line-soft)}
+  .kv:last-child{border-bottom:0}
+  .kv .k{width:54px;color:var(--muted);flex:none}
+  .kv .v{flex:1;min-width:0;word-break:break-all}
+  .kv code,.mono{font-family:var(--mono);font-size:11.5px}
+  .plist{max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+  .plist div{padding:5px 10px;font-size:12.5px;border-bottom:1px solid var(--line-soft);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .plist div:last-child{border-bottom:0}
+  .notice{display:flex;gap:9px;padding:10px 12px;border-radius:8px;font-size:12.5px;line-height:1.5;
+    background:var(--warn-soft);color:#7c420f;border:1px solid #f2e0bf;margin-bottom:12px}
+  .notice.info{background:#f1f5fb;color:#2f4a6d;border-color:#dbe4f0}
+  .notice b{font-weight:600}
+
+  .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:80}
+  .toast{min-width:250px;max-width:400px;padding:10px 13px;border-radius:9px;background:#26241f;color:#fff;
+    font-size:12.5px;box-shadow:var(--shadow);animation:in .16s ease-out;display:flex;align-items:center;gap:12px}
+  .toast.err{background:#8f221b}
+  .toast.ok{background:#1a6b3c}
+  .toast .undo{margin-left:auto;background:rgba(255,255,255,.16);border:0;color:#fff;padding:3px 9px;
+    border-radius:5px;font-size:11.5px;cursor:pointer;white-space:nowrap}
+  .toast .undo:hover{background:rgba(255,255,255,.28)}
+  @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><span class="mark">C</span>Claude Session Migration</div>
+    <div class="spacer"></div>
+    <div class="chip" id="curAcct">Loading…</div>
+    <div class="chip"><span class="dot" id="runDot"></span><span id="runText">Checking</span></div>
+    <button class="btn ghost sm" id="reloadBtn">Refresh</button>
+  </header>
+
+  <div class="body">
+    <aside class="side">
+      <div class="side-head">Accounts</div>
+      <div class="side-list" id="sideList"></div>
+      <div class="side-foot">Data folder<br><code id="dirText"></code></div>
+    </aside>
+
+    <main>
+      <div class="toolbar">
+        <div class="search">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M10.6 10.6L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="q" placeholder="Search title or path…" autocomplete="off">
+        </div>
+        <select id="sortSel" title="Sort">
+          <option value="time">Last activity ↓</option>
+          <option value="timeAsc">Oldest first ↑</option>
+          <option value="title">Title A-Z</option>
+        </select>
+        <label class="chk"><input type="checkbox" id="hideCur">Hide current account</label>
+        <label class="chk"><input type="checkbox" id="groupBox">Group by project</label>
+        <div class="vdiv"></div>
+        <div class="tgt">
+          <span>Migrate to</span>
+          <select id="toAccount"></select>
+          <select id="toSpace"></select>
+        </div>
+        <div class="grow"></div>
+        <span class="chip" id="selCount" style="height:24px">None selected</span>
+        <button class="btn primary" id="goBtn" disabled>Migrate</button>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="c"><input type="checkbox" id="allBox" title="Select all filtered"></th>
+              <th>Session</th>
+              <th>From account</th>
+              <th>Last activity</th>
+              <th>Model</th>
+              <th style="text-align:right;padding-right:8px">Flags</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty" id="empty" style="display:none"></div>
+      </div>
+
+      <div class="statusbar">
+        <span id="statTotal"></span>
+        <span id="statTarget"></span>
+        <div class="spacer"></div>
+        <span id="hint">⌘A select all · Space toggle · ↵ preview · / search</span>
+      </div>
+    </main>
+  </div>
+</div>
+
+<aside class="drawer" id="drawer">
+  <div class="dh" style="position:relative">
+    <div class="t" id="dTitle">…</div>
+    <div class="dmeta" id="dMeta"></div>
+    <button class="close" id="dClose" title="Close (Esc)">✕</button>
+  </div>
+  <div class="dbody" id="dBody"></div>
+  <div class="dfoot">
+    <span class="hint" id="dHint"></span>
+    <button class="btn" id="dMigrate">Migrate this session</button>
+  </div>
+</aside>
+
+<div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
+<div class="toasts" id="toasts"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem("csm:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("csm:" + k, JSON.stringify(v)); } catch {} },
+};
+
+const S = {
+  snap: null, filter: null, q: "", hideCur: LS.get("hideCur", true),
+  project: LS.get("project", ""), sort: LS.get("sort", "time"),
+  group: LS.get("group", true), collapsed: new Set(LS.get("collapsed", [])),
+  sel: new Set(), lastIdx: -1,
+  target: { account: LS.get("toAccount", null), space: null },
+  busy: false, drawer: null, hover: -1,
+};
+
+const folderName = cwd => {
+  if (!cwd || cwd === "-") return "Unknown folder";
+  const parts = String(cwd).split("/").filter(Boolean);
+  return parts[parts.length - 1] || cwd;
+};
+
+/* ================= data ================= */
+async function load(silent) {
+  try {
+    const j = await (await fetch("/api/state")).json();
+    if (!j.ok) throw new Error(j.error);
+    S.snap = j.data;
+    if (!S.target.account || !S.snap.accounts.some(a => a.id === S.target.account))
+      S.target.account = S.snap.current.account;
+    if (!S.target.space) S.target.space = S.snap.current.space;
+    const ids = new Set(S.snap.sessions.map(s => s.id));
+    [...S.sel].forEach(id => { if (!ids.has(id)) S.sel.delete(id); });
+    render();
+    if (silent && S.drawer) refreshDrawer();
+  } catch (e) {
+    toast("Failed to load: " + e.message, "err");
+  }
+}
+
+const dupIndex = () => {
+  const m = new Map();
+  for (const s of S.snap.sessions) {
+    if (!s.cliSessionId) continue;
+    if (!m.has(s.cliSessionId)) m.set(s.cliSessionId, []);
+    m.get(s.cliSessionId).push(s);
+  }
+  return m;
+};
+
+const projects = () => {
+  const m = new Map();
+  for (const s of S.snap.sessions) m.set(s.cwd, (m.get(s.cwd) || 0) + 1);
+  return [...m.entries()].sort((a, b) => b[1] - a[1]);
+};
+
+function visible() {
+  if (!S.snap) return [];
+  const q = S.q.trim().toLowerCase();
+  let rows = S.snap.sessions.filter(s => {
+    if (S.filter && s.account !== S.filter) return false;
+    if (S.project && s.cwd !== S.project) return false;
+    if (S.hideCur && s.current) return false;
+    if (q && !(s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)
+             || (s.model || "").toLowerCase().includes(q) || s.id.includes(q))) return false;
+    return true;
+  });
+  const t = r => r.activity || 0;
+  const cmp = S.sort === "timeAsc" ? (a, b) => t(a) - t(b)
+            : S.sort === "title"   ? (a, b) => a.title.localeCompare(b.title, "zh")
+            : (a, b) => t(b) - t(a);
+
+  if (!S.group) return rows.sort(cmp);
+
+  // grouped: sort within group, order groups by latest activity
+  const g = new Map();
+  for (const r of rows) {
+    const k = r.cwd || "-";
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(r);
+  }
+  for (const arr of g.values()) arr.sort(cmp);
+  const latest = k => g.get(k).reduce((m, r) => Math.max(m, t(r)), 0);
+  return [...g.keys()].sort((a, b) => latest(b) - latest(a)).flatMap(k => g.get(k));
+}
+
+/* ================= rendering ================= */
+function fmtTime(ms) {
+  if (!ms) return "—";
+  const d = new Date(ms), now = new Date(), p = n => String(n).padStart(2, "0");
+  const diff = (now - d) / 86400000;
+  if (diff < 1) return "Today " + p(d.getHours()) + ":" + p(d.getMinutes());
+  if (diff < 2) return "Yesterday " + p(d.getHours()) + ":" + p(d.getMinutes());
+  return (d.getFullYear() === now.getFullYear() ? "" : d.getFullYear() + "-")
+       + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+const kb = n => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+const pl = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+function render() {
+  const s = S.snap;
+  if (!s) return;
+  $("#curAcct").innerHTML = `Current account <b>${esc(s.current.account.slice(0, 8))}</b>`;
+  const run = s.claudeRunning;
+  $("#runDot").className = "dot" + (run ? " bad" : "");
+  $("#runText").textContent = run ? "Claude running" : "Claude not running";
+  $("#hideCur").checked = S.hideCur;
+  $("#groupBox").checked = S.group;
+  $("#dirText").textContent = s.appDir.replace(/^.*Application Support\//, "");
+
+  // sidebar
+  let html = `<div class="side-item ${S.filter === null ? "active" : ""}" data-acct="">
+    <span class="nm" style="font-family:inherit">All sessions</span><span class="ct">${s.sessions.length}</span></div>`;
+  for (const a of s.accounts) {
+    if (a.count === 0 && !a.isCurrent) continue;
+    html += `<div class="side-item ${S.filter === a.id ? "active" : ""}" data-acct="${esc(a.id)}">
+      ${a.isCurrent ? '<span class="tag"></span>' : ""}
+      <span class="nm">${esc(a.short)}${a.isCurrent ? " current" : ""}</span>
+      <span class="ct">${a.count}</span></div>`;
+  }
+  $("#sideList").innerHTML = html + (() => {
+    const ps = projects();
+    let h = `<div class="side-div"></div><div class="side-head" style="padding:9px 6px 4px">Projects</div>`;
+    h += `<div class="side-item ${!S.project ? "active" : ""}" data-proj="__all__">
+      <span class="nm" style="font-family:inherit">All projects</span>
+      <span class="ct">${s.sessions.length}</span></div>`;
+    for (const [c, n] of ps) {
+      h += `<div class="side-item ${S.project === c ? "active" : ""}" data-proj="${esc(c)}" title="${esc(c)}">
+        <span class="nm" style="font-family:inherit">${esc(folderName(c))}</span>
+        <span class="ct">${n}</span></div>`;
+    }
+    return h;
+  })();
+  document.querySelectorAll(".side-item").forEach(el => {
+    el.onclick = () => {
+      if ("proj" in el.dataset) {
+        S.project = el.dataset.proj === "__all__" ? "" : el.dataset.proj;
+        LS.set("project", S.project);
+      } else {
+        S.filter = el.dataset.acct || null;
+      }
+      render();
+    };
+  });
+
+  // project filter lives in the sidebar
+  if (S.project && !projects().some(x => x[0] === S.project)) {
+    S.project = "";
+    LS.set("project", "");
+  }
+  $("#sortSel").value = S.sort;
+
+  // target account / space
+  const accSel = $("#toAccount");
+  const asig = s.accounts.map(a => a.id).join();
+  if (accSel.dataset.sig !== asig) {
+    accSel.innerHTML = s.accounts.map(a =>
+      `<option value="${esc(a.id)}">${esc(a.short)}${a.isCurrent ? " (current)" : ""}</option>`).join("");
+    accSel.dataset.sig = asig;
+  }
+  accSel.value = S.target.account;
+  const acct = s.accounts.find(a => a.id === S.target.account);
+  const spaces = acct ? acct.spaces : [];
+  const spSel = $("#toSpace");
+  const ssig = S.target.account + "|" + spaces.map(x => x.id).join();
+  if (spSel.dataset.sig !== ssig) {
+    spSel.innerHTML = spaces.map(x => `<option value="${esc(x.id)}">Space ${esc(x.short)}</option>`).join("");
+    spSel.dataset.sig = ssig;
+  }
+  if (!spaces.some(x => x.id === S.target.space)) {
+    const cur = spaces.find(x => x.isCurrent) || spaces[0];
+    S.target.space = cur ? cur.id : null;
+  }
+  spSel.value = S.target.space || "";
+  spSel.style.display = spaces.length > 1 ? "" : "none";
+
+  // table
+  const rows = visible(), dup = dupIndex(), tbody = $("#rows");
+  const tgtAcct = S.target.account;
+  if (!rows.length) {
+    tbody.innerHTML = "";
+    const e = $("#empty");
+    e.style.display = "block";
+    e.innerHTML = `<h3>No matching sessions</h3>
+      <p>${S.hideCur ? "Sessions in the current account are hidden." : "Try another keyword or pick another account."}</p>
+      ${S.hideCur ? '<button class="btn sm" id="unhide">Show current-account sessions</button>' : ""}`;
+    const ub = $("#unhide");
+    if (ub) ub.onclick = () => { S.hideCur = false; LS.set("hideCur", false); $("#hideCur").checked = false; render(); };
+  } else {
+    $("#empty").style.display = "none";
+    const shown = S.group ? rows.filter(r => !S.collapsed.has(r.cwd || "-")) : rows;
+
+    const rowHTML = (r, i) => {
+      const flags = [];
+      if (r.current) flags.push('<span class="pill cur">Current</span>');
+      if (r.archived) flags.push('<span class="pill arch">Archived</span>');
+      if (!r.transcript.found) flags.push('<span class="pill no">No transcript</span>');
+      else if (r.account !== tgtAcct && (dup.get(r.cliSessionId) || []).some(x => x.account === tgtAcct))
+        flags.push('<span class="pill dup" title="Already present in the target account">Exists</span>');
+      const on = S.sel.has(r.id);
+      return `<tr data-id="${esc(r.id)}" data-i="${i}" class="${on ? "sel" : ""} ${S.group ? "g-row" : ""}" tabindex="0">
+        <td class="c"><input type="checkbox" ${on ? "checked" : ""} ${r.current ? "disabled" : ""}></td>
+        <td class="c-title">
+          <div class="title" title="${esc(r.title)}">${esc(r.title)}</div>
+          <div class="sub" title="${esc(r.cwd)}">${esc(r.cwd)}</div>
+        </td>
+        <td class="acct-cell"><div class="id">${esc(r.account.slice(0, 8))}</div>
+          <div class="sp">${esc(r.space.slice(0, 8))}</div></td>
+        <td class="time" title="${new Date(r.activity || 0).toLocaleString()}">${fmtTime(r.activity)}</td>
+        <td class="model" title="${esc(r.model)}">${esc((r.model || "—").replace(/^claude-/, ""))}</td>
+        <td class="flags">${flags.length ? flags.join("") : '<span style="color:#d3ccc4">—</span>'}</td>
+        <td class="act">${r.current ? "" :
+          '<button class="btn sm ghost rowbtn" data-mig="1" title="Migrate to the target account">→</button>'}</td>
+      </tr>`;
+    };
+
+    let html = "";
+    if (S.group) {
+      const groups = new Map();
+      for (const r of rows) {
+        const k = r.cwd || "-";
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(r);
+      }
+      for (const [cwd, arr] of groups) {
+        const open = !S.collapsed.has(cwd);
+        const pick = arr.filter(r => !r.current);
+        const allSel = pick.length > 0 && pick.every(r => S.sel.has(r.id));
+        const selN = pick.filter(r => S.sel.has(r.id)).length;
+        const latest = arr.reduce((m, r) => Math.max(m, r.activity || 0), 0);
+        html += `<tr class="grp" data-cwd="${esc(cwd)}"><td colspan="7"><div class="grphd">
+          <span class="chev ${open ? "open" : ""}">▶</span>
+          <input type="checkbox" class="gchk" ${allSel ? "checked" : ""} ${pick.length ? "" : "disabled"}>
+          <span class="gname">${esc(folderName(cwd))}</span>
+          <span class="gpath">${esc(cwd)}</span>
+          <span class="gcount">${arr.length}</span>
+          <div class="gright">${selN ? `<span>${selN} selected</span>` : ""}<span>${fmtTime(latest)}</span></div>
+        </div></td></tr>`;
+        if (open) for (const r of arr) html += rowHTML(r, shown.indexOf(r));
+      }
+    } else {
+      html = rows.map((r, i) => rowHTML(r, i)).join("");
+    }
+    tbody.innerHTML = html;
+
+    // group header: collapse / select whole group
+    tbody.querySelectorAll("tr.grp").forEach(tr => {
+      const cwd = tr.dataset.cwd, box = tr.querySelector(".gchk");
+      const pick = rows.filter(x => (x.cwd || "-") === cwd && !x.current);
+      const allSel = pick.length > 0 && pick.every(x => S.sel.has(x.id));
+      box.indeterminate = !allSel && pick.some(x => S.sel.has(x.id));
+      box.onclick = ev => ev.stopPropagation();
+      box.onchange = () => {
+        pick.forEach(x => box.checked ? S.sel.add(x.id) : S.sel.delete(x.id));
+        render();
+      };
+      tr.querySelector(".grphd").onclick = ev => {
+        if (ev.target === box) return;
+        S.collapsed.has(cwd) ? S.collapsed.delete(cwd) : S.collapsed.add(cwd);
+        LS.set("collapsed", [...S.collapsed]);
+        render();
+      };
+    });
+
+    tbody.querySelectorAll("tr[data-id]").forEach(tr => {
+      const id = tr.dataset.id;
+      const item = S.snap.sessions.find(x => x.id === id);
+      const i = +tr.dataset.i;
+      tr.onclick = ev => {
+        if (ev.target.closest("[data-mig]")) { ev.stopPropagation(); singleMigrate(id); return; }
+        if (ev.target.tagName === "INPUT") return;
+        if (item && item.current) { openDrawer(id); return; }
+        if (ev.shiftKey && S.lastIdx >= 0) {
+          const [a, b] = [Math.min(S.lastIdx, i), Math.max(S.lastIdx, i)];
+          const on = !S.sel.has(id);
+          shown.slice(a, b + 1).filter(x => !x.current).forEach(x => on ? S.sel.add(x.id) : S.sel.delete(x.id));
+        } else {
+          S.sel.has(id) ? S.sel.delete(id) : S.sel.add(id);
+        }
+        S.lastIdx = i;
+        render();
+      };
+      tr.ondblclick = () => openDrawer(id);
+      tr.onkeydown = ev => {
+        const all = [...tbody.querySelectorAll("tr[data-id]")];
+        const pos = all.indexOf(tr);
+        if (ev.key === " ") { ev.preventDefault(); tr.click(); }
+        if (ev.key === "Enter") { ev.preventDefault(); openDrawer(id); }
+        if (ev.key === "ArrowDown" && all[pos + 1]) { ev.preventDefault(); all[pos + 1].focus(); }
+        if (ev.key === "ArrowUp" && all[pos - 1]) { ev.preventDefault(); all[pos - 1].focus(); }
+      };
+    });
+  }
+
+  // counts and buttons
+  const n = S.sel.size;
+  $("#selCount").textContent = n ? `${n} selected` : "None selected";
+  $("#goBtn").disabled = n === 0 || S.busy;
+  $("#goBtn").textContent = S.busy ? "Migrating…" : "Migrate";
+  const shownCnt = S.group ? rows.filter(r => !S.collapsed.has(r.cwd || "-")).length : rows.length;
+  $("#statTotal").textContent = `${pl(s.sessions.length, "session")} · showing ${shownCnt}`
+    + (S.group ? ` · ${pl(new Set(rows.map(r => r.cwd)).size, "project")}` : "");
+  const a2 = s.accounts.find(a => a.id === S.target.account);
+  $("#statTarget").textContent = a2 ? `Target ${a2.short} / ${(S.target.space || "").slice(0, 8)}` : "";
+
+  const all = $("#allBox"), sel2 = visible().filter(r => !r.current)
+    .filter(r => !(S.group && S.collapsed.has(r.cwd || "-")));
+  all.checked = sel2.length > 0 && sel2.every(r => S.sel.has(r.id));
+  all.indeterminate = !all.checked && sel2.some(r => S.sel.has(r.id));
+  all.disabled = sel2.length === 0;
+}
+
+/* ================= preview drawer ================= */
+async function openDrawer(id) {
+  S.drawer = id;
+  $("#drawer").classList.add("on");
+  history.replaceState(null, "", "#s=" + id);
+  const s = S.snap.sessions.find(x => x.id === id);
+  if (!s) return;
+  $("#dTitle").textContent = s.title;
+  $("#dMeta").innerHTML = [
+    `Account ${s.account.slice(0, 8)}`, `Space ${s.space.slice(0, 8)}`,
+    fmtTime(s.activity), s.model || "—",
+    s.turns != null ? `${s.turns} turns` : null,
+    s.transcript.found ? kb(s.transcript.size) : "No transcript",
+    s.archived ? "Archived" : null,
+  ].filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join("");
+  $("#dBody").innerHTML = `<div class="skel" style="width:88%"></div><div class="skel" style="width:64%"></div>
+    <div class="skel" style="width:76%"></div>`;
+  $("#dHint").textContent = "";
+  const isCur = s.current;
+  $("#dMigrate").disabled = isCur;
+  $("#dMigrate").textContent = isCur ? "Already in this account" : "Migrate this session";
+
+  try {
+    const j = await (await fetch("/api/session?id=" + encodeURIComponent(id))).json();
+    if (S.drawer !== id) return;
+    if (!j.ok) { $("#dBody").innerHTML = `<div class="dempty">${esc(j.error)}</div>`; return; }
+    renderPreview(j.session, j.preview);
+  } catch (e) {
+    $("#dBody").innerHTML = `<div class="dempty">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderPreview(s, p) {
+  let h = "";
+  if (p.error) h += `<div class="notice"><span>⚠️</span><div>${esc(p.error)}</div></div>`;
+
+  // skip the "initial question" block when it equals the first listed message
+  const firstTxt = p.messages.length && p.messages[0].role === "user" ? p.messages[0].text : null;
+  const dupFirst = firstTxt && p.firstUser &&
+    (firstTxt.startsWith(p.firstUser.slice(0, 120)) || p.firstUser.startsWith(firstTxt.slice(0, 120)));
+  if (p.firstUser && (p.truncated || !dupFirst))
+    h += `<div class="firstq"><span class="lbl">Initial question</span>${esc(p.firstUser)}</div>`;
+
+  if (p.counts) h += `<div style="font-size:11px;color:var(--muted);margin:10px 0 2px">
+    ${p.counts.user} from you · ${p.counts.assistant} from Claude
+    ${p.truncated ? `(showing last ${p.messages.length})` : ""}</div>`;
+
+  if (!p.messages.length && !p.error) h += `<div class="dempty">No displayable messages in this transcript</div>`;
+  h += p.messages.map(m => `<div class="msg ${m.role === "user" ? "me" : ""} ${m.text.length > 420 ? "more" : ""}">
+      <div class="who">${m.role === "user" ? "You" : "Claude"}</div>
+      <div class="txt">${esc(m.text)}</div>
+    </div>`).join("");
+
+  $("#dBody").innerHTML = h;
+  $("#dBody").scrollTop = 0;
+  $("#dBody").querySelectorAll(".msg.more").forEach(el => {
+    el.onclick = () => el.classList.toggle("open");
+  });
+}
+
+function refreshDrawer() {
+  if (!S.drawer) return;
+  const s = S.snap.sessions.find(x => x.id === S.drawer);
+  if (!s) { closeDrawer(); return; }
+  $("#dTitle").textContent = s.title;
+  $("#dMigrate").disabled = s.current;
+  $("#dMigrate").textContent = s.current ? "Already in this account" : "Migrate this session";
+}
+
+function closeDrawer() {
+  S.drawer = null;
+  $("#drawer").classList.remove("on");
+  if (location.hash.startsWith("#s=")) history.replaceState(null, "", location.pathname);
+}
+
+/* ================= interactions ================= */
+$("#q").oninput = e => { S.q = e.target.value; render(); };
+$("#hideCur").checked = S.hideCur;
+$("#hideCur").onchange = e => { S.hideCur = e.target.checked; LS.set("hideCur", true); render(); };
+$("#groupBox").onchange = e => { S.group = e.target.checked; LS.set("group", S.group); render(); };
+$("#sortSel").onchange = e => { S.sort = e.target.value; LS.set("sort", S.sort); render(); };
+$("#toAccount").onchange = e => {
+  S.target.account = e.target.value; S.target.space = null;
+  LS.set("toAccount", S.target.account); render();
+};
+$("#toSpace").onchange = e => { S.target.space = e.target.value; render(); };
+$("#allBox").onchange = e => {
+  const rows = visible().filter(r => !r.current && !(S.group && S.collapsed.has(r.cwd || "-")));
+  e.target.checked ? rows.forEach(r => S.sel.add(r.id)) : rows.forEach(r => S.sel.delete(r.id));
+  render();
+};
+$("#reloadBtn").onclick = () => load();
+$("#goBtn").onclick = () => openConfirm([...S.sel]);
+$("#dClose").onclick = closeDrawer;
+$("#dMigrate").onclick = () => { if (S.drawer) singleMigrate(S.drawer); };
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { if ($("#overlay").classList.contains("on")) closeModal(); else closeDrawer(); }
+  if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#q").focus(); }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && document.activeElement.tagName !== "INPUT") {
+    e.preventDefault();
+    visible().filter(r => !r.current).forEach(r => S.sel.add(r.id));
+    render();
+  }
+});
+
+/* ================= modals ================= */
+function modal(html) { $("#modal").innerHTML = html; $("#overlay").classList.add("on"); }
+function closeModal() { $("#overlay").classList.remove("on"); }
+$("#overlay").onclick = e => { if (e.target.id === "overlay") closeModal(); };
+
+function openConfirm(ids) {
+  if (!ids.length) return;
+  // one session can exist under several accounts; dedupe by id so the count is honest
+  const items = [...new Map(
+    S.snap.sessions.filter(s => ids.includes(s.id)).map(s => [s.id, s])
+  ).values()];
+  const preview = items.slice(0, 12).map(s => `<div title="${esc(s.title)}">${esc(s.title)}</div>`).join("");
+  const more = items.length > 12 ? `<div style="color:var(--muted)">… ${items.length - 12} more</div>` : "";
+  const a = S.snap.accounts.find(x => x.id === S.target.account);
+  const run = S.snap.claudeRunning;
+  const dup = dupIndex();
+  const clashes = items.filter(s => (dup.get(s.cliSessionId) || [])
+    .some(x => x.account === S.target.account && x.id !== s.id));
+  const missing = items.filter(s => !s.transcript.found).length;
+
+  modal(`
+    <h2>Migrate ${pl(ids.length, "session")}</h2>
+    <div class="mbody">
+      ${run ? `<div class="notice"><span>⚠️</span><div>Detected <b>Claude is running</b>. Quit it with ⌘Q first — the running process overwrites disk changes from memory and the migration may be lost.</div></div>` : ""}
+      ${clashes.length ? `<div class="notice info"><span>ℹ️</span><div><b>${clashes.length}</b> already exist in the target account and will be skipped, so nothing is duplicated.</div></div>` : ""}
+      ${missing ? `<div class="notice"><span>⚠️</span><div><b>${missing}</b> have no transcript jsonl; they may open empty.</div></div>` : ""}
+      <div class="kv"><div class="k">Target</div><div class="v">
+        Account <code>${esc(S.target.account.slice(0, 8))}</code> / Space <code>${esc((S.target.space || "").slice(0, 8))}</code>
+        ${a && a.isCurrent ? '<span class="pill cur" style="margin-left:6px">Current account</span>' : ""}
+      </div></div>
+      <div class="kv"><div class="k">Sessions</div><div class="v" style="margin-top:2px">
+        <div class="plist">${preview}${more}</div></div></div>
+      <div class="kv"><div class="k">Note</div><div class="v" style="color:var(--text-2);font-size:12px">
+        Only the metadata blob (~40 KB) is copied. The transcript jsonl stays where it is and the source account keeps its copy. You can undo afterwards.
+      </div></div>
+      ${run ? `<label class="chk" style="margin-top:12px"><input type="checkbox" id="forceBox">
+        I understand the risk, write anyway</label>` : ""}
+    </div>
+    <div class="mfoot">
+      <span class="left">Restart Claude to see the change</span>
+      <button class="btn" id="cancelBtn">Cancel</button>
+      <button class="btn primary" id="confirmBtn" ${run ? "disabled" : ""}>Start migration</button>
+    </div>`);
+
+  $("#cancelBtn").onclick = closeModal;
+  const fb = $("#forceBox");
+  if (fb) fb.onchange = () => { $("#confirmBtn").disabled = !fb.checked; };
+  $("#confirmBtn").onclick = () => doMigrate(ids, run && fb && fb.checked);
+}
+
+function singleMigrate(id) {
+  const s = S.snap.sessions.find(x => x.id === id);
+  if (!s) return;
+  if (s.current) { toast("This session is already in the current account"); return; }
+  if (s.account === S.target.account && s.space === S.target.space) { toast("Already in the target location"); return; }
+  if (S.snap.claudeRunning) { openConfirm([id]); return; }
+  modal(`
+    <h2>Migrate “${esc(s.title)}”</h2>
+    <div class="mbody">
+      <div class="kv"><div class="k">From</div><div class="v"><code>${esc(s.account.slice(0, 8))} / ${esc(s.space.slice(0, 8))}</code></div></div>
+      <div class="kv"><div class="k">Target</div><div class="v"><code>${esc(S.target.account.slice(0, 8))} / ${esc((S.target.space || "").slice(0, 8))}</code></div></div>
+      <div class="kv"><div class="k">Transcript</div><div class="v">${s.transcript.found
+        ? esc(kb(s.transcript.size)) : '<span style="color:var(--warn)">Missing</span>'}</div></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" id="cancelBtn">Cancel</button>
+      <button class="btn primary" id="confirmBtn">Migrate</button>
+    </div>`);
+  $("#cancelBtn").onclick = closeModal;
+  $("#confirmBtn").onclick = () => doMigrate([id], false);
+}
+
+async function doMigrate(ids, force) {
+  S.busy = true;
+  const b = $("#confirmBtn");
+  if (b) { b.disabled = true; b.textContent = "Migrating…"; }
+  render();
+  try {
+    const j = await (await fetch("/api/migrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, force, toAccount: S.target.account, toSpace: S.target.space }),
+    })).json();
+    if (!j.ok) throw new Error(j.error || "Migration failed");
+    closeModal();
+    const { ok, failed } = j.summary;
+    S.sel.clear();
+    toast(failed ? `Done: ${ok} migrated, ${failed} failed` : `Migrated ${pl(ok, "session")}`,
+          failed ? "err" : "ok",
+          j.batchId && !failed ? { label: "Undo", fn: () => undo(j.batchId) } : null);
+    if (failed) showFailures(j.results.filter(x => !x.ok));
+    await load();
+  } catch (e) {
+    toast(e.message, "err");
+    const c = $("#confirmBtn");
+    if (c) { c.disabled = false; c.textContent = "Start migration"; }
+  } finally {
+    S.busy = false;
+    render();
+  }
+}
+
+async function undo(batchId) {
+  try {
+    const j = await (await fetch("/api/undo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ batchId }),
+    })).json();
+    if (!j.ok) throw new Error(j.error);
+    toast("Migration undone", "ok");
+    await load();
+  } catch (e) {
+    toast("Undo failed: " + e.message, "err");
+  }
+}
+
+function showFailures(fails) {
+  modal(`
+    <h2>${pl(fails.length, "session")} not migrated</h2>
+    <div class="mbody">
+      <div class="notice"><span>⚠️</span><div>Usually a file with the same name already exists in the target, or the source file was moved.</div></div>
+      ${fails.map(f => `<div class="kv"><div class="k" style="width:auto;flex:1;color:var(--text)">
+        ${esc(f.title || f.id)}</div><div class="v" style="flex:2;color:var(--danger);font-size:12px">
+        ${esc(f.error || "Unknown error")}</div></div>`).join("")}
+    </div>
+    <div class="mfoot"><button class="btn" id="okBtn">Close</button></div>`);
+  $("#okBtn").onclick = closeModal;
+}
+
+function toast(msg, kind, action) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.innerHTML = `<span>${esc(msg)}</span>`;
+  if (action) {
+    const btn = document.createElement("button");
+    btn.className = "undo";
+    btn.textContent = action.label;
+    btn.onclick = () => { action.fn(); el.remove(); };
+    el.appendChild(btn);
+  }
+  $("#toasts").appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transition = "opacity .25s"; }, 6000);
+  setTimeout(() => el.remove(), 6400);
+}
+
+load();
+setInterval(() => { if (!S.busy && !document.hidden) load(true); }, 15000);
+
+// deep link: #s=<sessionId> opens that preview
+window.addEventListener("hashchange", () => {
+  const m = location.hash.match(/^#s=(.+)$/);
+  if (m && S.snap && S.snap.sessions.some(x => x.id === m[1])) openDrawer(m[1]);
+});
+(async () => {
+  const m = location.hash.match(/^#s=(.+)$/);
+  if (!m) return;
+  for (let i = 0; i < 20 && !S.snap; i++) await new Promise(r => setTimeout(r, 100));
+  if (S.snap && S.snap.sessions.some(x => x.id === m[1])) openDrawer(m[1]);
+})();
+</script>
+</body>
+</html>
