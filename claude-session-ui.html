@@ -468,9 +468,13 @@ function render() {
   const curP = profileOf(s.currentProfile) || s.profiles[0] || { name: "-", current: {} };
   $("#curAcct").innerHTML = (multiProfile() ? `${esc(curP.name)} · account ` : "Current account ")
     + `<b>${esc((curP.current.account || "—").slice(0, 8))}</b>`;
-  const run = s.claudeRunning;
+  const runningNow = s.profiles.filter(p => p.running);
+  const run = runningNow.length > 0;
   $("#runDot").className = "dot" + (run ? " bad" : "");
-  $("#runText").textContent = run ? "Claude running" : "Claude not running";
+  $("#runText").textContent = run
+    ? (runningNow.length > 1 ? `Claude running ×${runningNow.length}`
+       : `Claude running (${runningNow[0].name})`)
+    : "Claude not running";
   $("#hideCur").checked = S.hideCur;
   $("#groupBox").checked = S.group;
   const folderHint = multiProfile() ? s.profilesRoot : ((s.profiles[0] || {}).path || s.profilesRoot);
@@ -827,15 +831,15 @@ function openConfirm(keys) {
   const more = items.length > 12 ? `<div style="color:var(--muted)">… ${items.length - 12} more</div>` : "";
   const tgt = profileOf(S.target.profile);
   const a = tgt ? tgt.accounts.find(x => x.id === S.target.account) : null;
-  const run = S.snap.claudeRunning;
+  const run = !!(profileOf(S.target.profile) || {}).running;
   const clashes = items.filter(existsInTarget);
   const missing = items.filter(s => !s.transcript.found).length;
 
   modal(`
     <h2>Migrate ${pl(items.length, "session")}</h2>
     <div class="mbody">
-      ${run ? `<div class="notice"><span>⚠️</span><div>Detected <b>Claude is running</b>. Quit it with ⌘Q first — the running process overwrites disk changes from memory and the migration may be lost.
-        <div style="margin-top:7px"><button class="btn sm" id="quitNowBtn">Quit Claude</button></div></div></div>` : ""}
+      ${run ? `<div class="notice"><span>⚠️</span><div><b>Profile "${esc(S.target.profile)}" is running</b> — it rewrites this store from memory, so the migration could be lost. Other profiles can stay open.
+        <div style="margin-top:7px"><button class="btn sm" id="quitNowBtn">Quit ${esc(S.target.profile)}</button></div></div></div>` : ""}
       ${clashes.length ? `<div class="notice info"><span>ℹ️</span><div><b>${clashes.length}</b> already exist in the target account.
         Left alone they are skipped; tick the option below to overwrite their metadata — that is how you push
         later turns back to the other account.</div></div>` : ""}
@@ -864,9 +868,10 @@ function openConfirm(keys) {
   const qb = $("#quitNowBtn");
   if (qb) qb.onclick = async () => {
     qb.disabled = true; qb.textContent = "Quitting…";
-    const r = await quitClaude(null, null);
+    const prof = S.target.profile;
+    const r = await quitClaude(prof, null);
     if (r && r.ok) openConfirm(keys);
-    else { qb.disabled = false; qb.textContent = "Quit Claude"; }
+    else { qb.disabled = false; qb.textContent = "Quit " + prof; }
   };
   const fb = $("#forceBox");
   const ob = $("#overwriteBox");

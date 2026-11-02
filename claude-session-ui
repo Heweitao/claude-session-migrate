@@ -143,11 +143,6 @@ class Handler(BaseHTTPRequestHandler):
         move = bool(payload.get("move"))
         dry_run = bool(payload.get("dryRun"))
 
-        if lib.claude_running() and not force and not dry_run:
-            self._json({"ok": False, "error": "Claude is running. Quit it with ⌘Q first (or choose force write)",
-                        "needForce": True}, 409)
-            return
-
         try:
             dst_profile = payload.get("toProfile") or lib.DEFAULT_PROFILE
             dst_account = payload.get("toAccount") or lib.current_account(dst_profile)
@@ -158,6 +153,13 @@ class Handler(BaseHTTPRequestHandler):
                 by_id.setdefault(s["id"], s)
         except lib.MigrateError as e:
             self._json({"ok": False, "error": str(e)}, 400)
+            return
+
+        # only the target profile rewrites its own store — another instance is irrelevant
+        if lib.profile_running(dst_profile) and not force and not dry_run:
+            self._json({"ok": False, "needForce": True, "profile": dst_profile,
+                        "error": f"Profile '{dst_profile}' is running. Quit it first (or choose force write)"},
+                       409)
             return
 
         results = []

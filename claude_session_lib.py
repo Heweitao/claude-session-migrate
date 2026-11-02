@@ -526,6 +526,7 @@ def _sync_space_marker(session: dict, dst_profile: str, dst_account: str, dst_sp
 # --------------------------------------------------------------------------- snapshot (for the UI)
 def snapshot() -> dict:
     sessions = iter_sessions()
+    inst = running_instances()
     profiles = []
     for name in require_profiles():
         accts = [s for s in sessions if s["profile"] == name]
@@ -553,6 +554,7 @@ def snapshot() -> dict:
             "name": name,
             "path": str(app_dir(name)),
             "isDefault": name == DEFAULT_PROFILE,
+            "running": any(i["profile"] == name for i in inst),
             "current": {"account": cur_acct, "space": cur_space},
             "accounts": accounts,
             "count": len(accts),
