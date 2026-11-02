@@ -278,6 +278,24 @@ def claude_running() -> bool:
         return False
 
 
+def _stamp() -> str:
+    """Second precision plus milliseconds, so two calls in the same second differ."""
+    t = time.time()
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime(t)) + f"-{int(t * 1000) % 1000:03d}"
+
+
+def _free_path(p: Path) -> Path:
+    """p if it is free, otherwise p-1, p-2 … Collisions cannot overwrite an older file."""
+    if not p.exists():
+        return p
+    i = 1
+    while True:
+        q = p.with_name(f"{p.name}-{i}")
+        if not q.exists():
+            return q
+        i += 1
+
+
 def norm_sid(q: str) -> str:
     q = (q or "").strip()
     if q.endswith(".json"):
@@ -446,7 +464,7 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
         return {"ok": True, "dryRun": True, "log": log, "error": None}
 
     dst_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y%m%d-%H%M%S")
+    ts = _stamp()
 
     existed = dst_file.exists()
     backup = None
@@ -459,7 +477,7 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
         if same:
             log.append("Identical file already in target, skipped writing")
         elif force:
-            backup = dst_file.with_suffix(f".json.bak-{ts}")
+            backup = _free_path(dst_file.with_suffix(f".json.bak-{ts}"))
             shutil.copy2(dst_file, backup)
             shutil.copy2(src_file, dst_file)
             log.append(f"Backed up and overwrote: {backup.name}")
@@ -475,8 +493,9 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
     # a tombstone file hides the session from the list
     tomb = dst_dir / f"deleted_{session['id'][len('local_'):]}"
     if tomb.exists():
-        tomb.rename(dst_dir / f"{tomb.name}.bak-{ts}")
-        log.append(f"Moved tombstone aside: {tomb.name}")
+        moved = _free_path(dst_dir / f"{tomb.name}.bak-{ts}")
+        tomb.rename(moved)
+        log.append(f"Moved tombstone aside: {moved.name}")
 
     if _sync_archive(session, dst_dir):
         log.append("Synced archive state")
@@ -484,7 +503,7 @@ def migrate_one(session: dict, dst_profile: str, dst_account: str, dst_space: st
     _sync_space_marker(session, dst_profile, dst_account, dst_space, log)
 
     if move:
-        bak = src_file.with_suffix(f".json.moved-{ts}")
+        bak = _free_path(src_file.with_suffix(f".json.moved-{ts}"))
         src_file.rename(bak)
         log.append(f"Source renamed to {bak.name}")
 
@@ -688,7 +707,7 @@ def undo_batch(batch_id: str) -> dict:
     if batch.get("undone"):
         return {"ok": False, "error": "This batch has already been undone"}
 
-    ts = time.strftime("%Y%m%d-%H%M%S")
+    ts = _stamp()
     log, failed = [], 0
     for it in batch["items"]:
         dst = Path(it["dst"])
@@ -697,7 +716,7 @@ def undo_batch(batch_id: str) -> dict:
                 shutil.copy2(it["backup"], dst)
                 log.append(f"Restored overwritten file: {dst.name}")
             elif dst.is_file():
-                dst.rename(dst.with_suffix(f".json.undone-{ts}"))
+                dst.rename(_free_path(dst.with_suffix(f".json.undone-{ts}")))
                 log.append(f"Withdrew from target: {dst.name}")
             else:
                 log.append(f"Target no longer exists, skipped: {dst.name}")
