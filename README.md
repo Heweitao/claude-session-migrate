@@ -122,6 +122,23 @@ claude-session-migrate migrate <id> --move        # rename the source to .moved-
   restores backups or withdraws the copied file.
 - The server binds **127.0.0.1 only** and makes no outbound network calls.
 
+### Round-trip: continue in B, then go back to A
+
+Because the transcript is shared, this works — with one thing to know.
+
+After you migrate A → B and keep working in B, the conversation itself is appended to the one
+shared `.jsonl`, so account A still sees the new turns. What does **not** sync is A's metadata
+copy: its turn count, last-activity time and resume pointer stay frozen at migration time.
+
+To refresh them, migrate **B → A** with *Overwrite the N existing copies in the target account*
+ticked in the confirmation dialog. You get the same effect from the CLI with `--force`:
+
+```bash
+claude-session-migrate migrate <id> --to-account <A-uuid> --force
+```
+
+Without that, A's list shows a stale timestamp and may resume from an outdated position.
+
 ### Limits
 
 - **Local sessions only** (`local_<id>`). Cloud-side `session_<id>` conversations live on
@@ -244,6 +261,22 @@ claude-session-migrate migrate <会话ID> --move    # 迁完后把源文件改�
 - 覆盖已有文件前先备份到 `.bak-<ts>`。
 - 每批操作记入 `~/.claude/session-migrate-journal.json`（保留最近 40 批），撤销时还原备份或撤出文件。
 - 服务只监听 **127.0.0.1**，不发起任何外部网络请求。
+
+### 双向续作：A → B → A
+
+正文共用一份，所以这条路是通的，只有一个点要知道。
+
+A 迁到 B、在 B 里继续聊之后，新内容追加到那唯一的 `.jsonl` 里，A 打开照样看得到。
+**不会自动同步的是 A 的元数据副本**：轮数、最近活动时间、续作落点都停在迁移那一刻。
+
+要让它们对齐，就反向迁一次 **B → A**，在确认框里勾上「Overwrite the N existing copies in the
+target account」。命令行等价写法：
+
+```bash
+claude-session-migrate migrate <会话ID> --to-account <A的UUID> --force
+```
+
+不做这一步，A 的列表时间会是旧的，续作落点也可能不对。
 
 ### 限制
 

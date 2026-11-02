@@ -367,6 +367,11 @@ const dupIndex = () => {
   return m;
 };
 
+// 目标账号里是否已存在这条会话（同 id 的副本，或同 cliSessionId 的副本）
+const existsInTarget = s => S.snap.sessions.some(x =>
+  x.account === S.target.account && x.space === S.target.space &&
+  (x.id === s.id || (!!s.cliSessionId && x.cliSessionId === s.cliSessionId)));
+
 const projects = () => {
   const m = new Map();
   for (const s of S.snap.sessions) m.set(s.cwd, (m.get(s.cwd) || 0) + 1);
@@ -750,16 +755,16 @@ function openConfirm(ids) {
   const more = items.length > 12 ? `<div style="color:var(--muted)">… ${items.length - 12} more</div>` : "";
   const a = S.snap.accounts.find(x => x.id === S.target.account);
   const run = S.snap.claudeRunning;
-  const dup = dupIndex();
-  const clashes = items.filter(s => (dup.get(s.cliSessionId) || [])
-    .some(x => x.account === S.target.account && x.id !== s.id));
+  const clashes = items.filter(existsInTarget);
   const missing = items.filter(s => !s.transcript.found).length;
 
   modal(`
     <h2>Migrate ${pl(ids.length, "session")}</h2>
     <div class="mbody">
       ${run ? `<div class="notice"><span>⚠️</span><div>Detected <b>Claude is running</b>. Quit it with ⌘Q first — the running process overwrites disk changes from memory and the migration may be lost.</div></div>` : ""}
-      ${clashes.length ? `<div class="notice info"><span>ℹ️</span><div><b>${clashes.length}</b> already exist in the target account and will be skipped, so nothing is duplicated.</div></div>` : ""}
+      ${clashes.length ? `<div class="notice info"><span>ℹ️</span><div><b>${clashes.length}</b> already exist in the target account.
+        Left alone they are skipped; tick the option below to overwrite their metadata — that is how you push
+        later turns back to the other account.</div></div>` : ""}
       ${missing ? `<div class="notice"><span>⚠️</span><div><b>${missing}</b> have no transcript jsonl; they may open empty.</div></div>` : ""}
       <div class="kv"><div class="k">Target</div><div class="v">
         Account <code>${esc(S.target.account.slice(0, 8))}</code> / Space <code>${esc((S.target.space || "").slice(0, 8))}</code>
@@ -770,6 +775,8 @@ function openConfirm(ids) {
       <div class="kv"><div class="k">Note</div><div class="v" style="color:var(--text-2);font-size:12px">
         Only the metadata blob (~40 KB) is copied. The transcript jsonl stays where it is and the source account keeps its copy. You can undo afterwards.
       </div></div>
+      ${clashes.length ? `<label class="chk" style="margin-top:12px"><input type="checkbox" id="overwriteBox">
+        Overwrite the ${clashes.length} existing cop${clashes.length === 1 ? "y" : "ies"} in the target account</label>` : ""}
       ${run ? `<label class="chk" style="margin-top:12px"><input type="checkbox" id="forceBox">
         I understand the risk, write anyway</label>` : ""}
     </div>
@@ -781,8 +788,9 @@ function openConfirm(ids) {
 
   $("#cancelBtn").onclick = closeModal;
   const fb = $("#forceBox");
+  const ob = $("#overwriteBox");
   if (fb) fb.onchange = () => { $("#confirmBtn").disabled = !fb.checked; };
-  $("#confirmBtn").onclick = () => doMigrate(ids, run && fb && fb.checked);
+  $("#confirmBtn").onclick = () => doMigrate(ids, !!((fb && fb.checked) || (ob && ob.checked)));
 }
 
 function singleMigrate(id) {
@@ -791,9 +799,12 @@ function singleMigrate(id) {
   if (s.current) { toast("This session is already in the current account"); return; }
   if (s.account === S.target.account && s.space === S.target.space) { toast("Already in the target location"); return; }
   if (S.snap.claudeRunning) { openConfirm([id]); return; }
+  const exists = existsInTarget(s);
   modal(`
     <h2>Migrate “${esc(s.title)}”</h2>
     <div class="mbody">
+      ${exists ? `<div class="notice"><span>⚠️</span><div>The target account already has this session.
+        Continuing will <b>overwrite its metadata</b> with this account's newer state.</div></div>` : ""}
       <div class="kv"><div class="k">From</div><div class="v"><code>${esc(s.account.slice(0, 8))} / ${esc(s.space.slice(0, 8))}</code></div></div>
       <div class="kv"><div class="k">Target</div><div class="v"><code>${esc(S.target.account.slice(0, 8))} / ${esc((S.target.space || "").slice(0, 8))}</code></div></div>
       <div class="kv"><div class="k">Transcript</div><div class="v">${s.transcript.found
@@ -804,7 +815,7 @@ function singleMigrate(id) {
       <button class="btn primary" id="confirmBtn">Migrate</button>
     </div>`);
   $("#cancelBtn").onclick = closeModal;
-  $("#confirmBtn").onclick = () => doMigrate([id], false);
+  $("#confirmBtn").onclick = () => doMigrate([id], exists);
 }
 
 async function doMigrate(ids, force) {
