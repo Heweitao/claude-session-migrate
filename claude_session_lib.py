@@ -153,6 +153,39 @@ def login_state(profile: str) -> dict:
                 pass
 
 
+def plan_usage(profile: str) -> dict:
+    """Read the app's own plan-usage-history.json.
+
+    Samples are {t: ms, org: spaceUuid, u: {fh: 5h window %, sd: 7d window %}}.
+    A profile may log several orgs, so the series is taken from the org of the
+    most recent sample.
+    """
+    d = read_json(app_dir(profile) / "plan-usage-history.json") or {}
+    raw = d.get("samples") or []
+    samples = [x for x in raw if isinstance(x, dict) and isinstance(x.get("u"), dict)]
+    if not samples:
+        return {"available": False}
+
+    latest = samples[-1]
+    org = latest.get("org")
+    series = [x["u"]["fh"] for x in samples
+              if x.get("org") == org and isinstance(x["u"].get("fh"), (int, float))][-60:]
+    orgs = {x.get("org") for x in samples if x.get("org")}
+    return {
+        "available": True,
+        "latest": {
+            "t": latest.get("t"),
+            "org": org,
+            "fh": latest["u"].get("fh"),
+            "sd": latest["u"].get("sd"),
+        },
+        "series": series,
+        "orgCount": len(orgs),
+        "sampleCount": len(samples),
+        "since": samples[0].get("t"),
+    }
+
+
 def profile_status(profile: str) -> dict:
     st = {
         "name": profile,
@@ -168,6 +201,7 @@ def profile_status(profile: str) -> dict:
     except MigrateError:
         st["current"] = {"account": None}
         st["accounts"] = 0
+    st["usage"] = plan_usage(profile)
     return st
 
 

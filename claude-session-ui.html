@@ -210,6 +210,13 @@
   .newprof input{flex:1;height:29px;padding:0 9px;border-radius:7px;border:1px solid var(--line);
     background:var(--surface-2);outline:none;font-size:12.5px;min-width:0}
   .newprof input:focus{border-color:var(--accent-line);background:#fff}
+  .usage{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:nowrap;
+    font-size:11px;color:var(--text-2);overflow:hidden}
+  .ulabel{display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+  .ubar{display:inline-block;width:62px;height:5px;border-radius:3px;background:#efece8;
+    overflow:hidden;vertical-align:middle}
+  .ubar i{display:block;height:100%;border-radius:3px}
+  .uspark{display:inline-block;vertical-align:middle;margin-left:2px}
 
   /* ---------- modal ---------- */
   .overlay{position:fixed;inset:0;background:rgba(31,29,26,.3);backdrop-filter:blur(2px);
@@ -999,6 +1006,7 @@ async function refreshProfiles() {
           <div class="ppath" title="${esc(p.path)}">${esc(p.path.replace(/^\/Users\/[^/]+/, "~"))}</div>
           <div class="pstat">${run}<span class="sep">|</span>${login}<span class="sep">|</span>
             ${acct}<span class="sep">|</span>${pl(p.accounts, "account")}</div>
+          ${usageLine(p.usage)}
         </div>
         <div class="pact">
           <button class="btn sm" data-popen="${esc(p.name)}" ${p.running ? "disabled" : ""}>Open</button>
@@ -1013,6 +1021,41 @@ async function refreshProfiles() {
   } catch (e) {
     body.innerHTML = `<div class="notice"><span>⚠️</span><div>${esc(e.message)}</div></div>`;
   }
+}
+
+function usageLine(u) {
+  if (!u || !u.available) {
+    return `<div class="usage"><span style="color:var(--muted)">no usage recorded yet —
+      open this profile and use it once</span></div>`;
+  }
+  const L = u.latest || {};
+  const col = v => v >= 90 ? "var(--danger)" : v >= 70 ? "var(--warn)" : "var(--accent)";
+  const bar = v => `<span class="ubar"><i style="width:${Math.max(0, Math.min(100, v || 0))}%;
+    background:${col(v || 0)}"></i></span>`;
+  const d = new Date(L.t || 0);
+  const hhmm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  const tip = `as of ${hhmm} · ${pl(u.sampleCount, "sample")} across ${pl(u.orgCount, "org")}`
+    + `, since ${new Date(u.since || 0).toLocaleString("en-US")}`;
+  return `<div class="usage" title="${tip}">
+    <span class="ulabel" title="5-hour window">5h ${bar(L.fh)} ${L.fh ?? 0}%</span>
+    ${L.sd == null ? "" : `<span class="ulabel" title="7-day window">7d ${bar(L.sd)} ${L.sd}%</span>`}
+    <span title="space ${esc(L.org || "")}">org ${esc((L.org || "").slice(0, 8))}</span>
+    ${spark(u.series)}
+  </div>`;
+}
+
+function spark(vals) {
+  if (!vals || vals.length < 2) return "";
+  const w = 72, h = 16, pad = 1.5, max = Math.max(100, ...vals);
+  const x = i => (i / (vals.length - 1)) * w;
+  const y = v => (h - pad) - (v / max) * (h - pad * 2);
+  const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const base = y(0).toFixed(1);
+  return `<svg class="uspark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"
+      preserveAspectRatio="none" aria-hidden="true">
+    <line x1="0" y1="${base}" x2="${w}" y2="${base}" stroke="#e8e5e1" stroke-width="1"/>
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.6"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 async function openProfile(name, btn) {
