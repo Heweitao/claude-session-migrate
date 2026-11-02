@@ -96,8 +96,10 @@ Once a profile exists, this tool treats it as a migration target like any other:
 **profile → account → space** in the toolbar, or pass `--to-profile` on the CLI.
 
 For "make this profile look like that one", **Sync** copies every session that is not already at the
-target in one go, and shows the breakdown per project first. Selective work stays in the table: it is
-already grouped by project and each group header has its own select-all.
+target in one go, and shows the breakdown per project first. It follows the current view: with no
+filter set that is everything, and filtering to a project or account narrows it — the dialog spells
+out the scope it will use. Selective work stays in the table: it is already grouped by project and
+each group header has its own select-all.
 
 Disk warning: a fresh profile re-downloads what it needs. If you use the Cowork VM sandbox in it,
 expect another ~11 GB for the VM image.
@@ -274,7 +276,8 @@ claude-profile list            # 列出 profile 与占用
 或者命令行加 `--to-profile`。
 
 想让「这个 profile 变成那个的样子」，用 **Sync**：一次把所有还不在目标位置的会话搬过去，
-之前先按项目给你看汇总。要挑着搬就用表格——它本来就按项目分组，每个组头有整组全选。
+之前先按项目给你看汇总。它跟随当前视图：没筛选就是全部，筛了项目或账号就只搬那一部分，
+弹窗里会写明这次的范围。要挑着搬就用表格——它本来就按项目分组，每个组头有整组全选。
 
 磁盘提醒：新 profile 要重新下载自己需要的组件。如果在那边用 Cowork 沙箱，
 VM 镜像还会再占约 11 GB。

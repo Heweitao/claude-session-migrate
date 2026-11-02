@@ -297,7 +297,7 @@
         </div>
         <div class="grow"></div>
         <span class="chip" id="selCount" style="height:24px">None selected</span>
-        <button class="btn" id="syncBtn" title="Copy every session into the target at once">Sync</button>
+        <button class="btn" id="syncBtn" title="Copy the sessions currently listed into the target">Sync</button>
         <button class="btn primary" id="goBtn" disabled>Migrate</button>
       </div>
 
@@ -420,13 +420,14 @@ const projects = () => {
   return [...m.entries()].sort((a, b) => b[1] - a[1]);
 };
 
-function visible() {
+function visible(opts) {
   if (!S.snap) return [];
   const q = S.q.trim().toLowerCase();
+  const hideCur = S.hideCur && !(opts && opts.ignoreHideCur);
   let rows = S.snap.sessions.filter(s => {
     if (S.filter && (s.profile !== S.filter.profile || s.account !== S.filter.account)) return false;
     if (S.project && s.cwd !== S.project) return false;
-    if (S.hideCur && s.current) return false;
+    if (hideCur && s.current) return false;
     if (q && !(s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q)
              || (s.model || "").toLowerCase().includes(q) || s.id.includes(q))) return false;
     return true;
@@ -865,6 +866,8 @@ function openConfirm(keys, opts) {
         ${multiProfile() ? `Profile <code>${esc(S.target.profile)}</code> / ` : ""}Account <code>${esc((S.target.account || "").slice(0, 8))}</code> / Space <code>${esc((S.target.space || "").slice(0, 8))}</code>
         ${a && a.isCurrent ? '<span class="pill cur" style="margin-left:6px">Current account</span>' : ""}
       </div></div>
+      ${opts && opts.scope ? `<div class="kv"><div class="k">Scope</div><div class="v" style="font-size:12px">
+        ${esc(opts.scope)}</div></div>` : ""}
       <div class="kv"><div class="k">${asTree ? "Projects" : "Sessions"}</div><div class="v" style="margin-top:2px">
         ${asTree ? preview : `<div class="plist">${preview}${more}</div>`}</div></div>
       <div class="kv"><div class="k">Note</div><div class="v" style="color:var(--text-2);font-size:12px">
@@ -896,13 +899,25 @@ function openConfirm(keys, opts) {
   $("#confirmBtn").onclick = () => doMigrate(keys, !!((fb && fb.checked) || (ob && ob.checked)));
 }
 
+// what Sync copies = what the table is showing right now, minus what is already at the target
+function syncScope() {
+  const bits = [];
+  if (S.filter) bits.push(`account ${S.filter.account.slice(0, 8)}`);
+  if (S.project) bits.push(`project ${folderName(S.project)}`);
+  if (S.q.trim()) bits.push(`search "${S.q.trim()}"`);
+  return bits.join(" · ");
+}
+
 function openSync() {
-  const items = S.snap.sessions.filter(s => !inTarget(s));
+  // hide-current is a browsing convenience, not a scope limit — Sync ignores it
+  const items = visible({ ignoreHideCur: true }).filter(s => !inTarget(s));
   if (!items.length) {
-    toast("Everything is already in the target location");
+    toast(S.snap.sessions.some(s => !inTarget(s))
+      ? "Nothing to sync in the current view — clear the filters to include everything"
+      : "Everything is already in the target location");
     return;
   }
-  openConfirm(items.map(skey), { tree: true });
+  openConfirm(items.map(skey), { tree: true, scope: syncScope() });
 }
 
 function singleMigrate(k) {
