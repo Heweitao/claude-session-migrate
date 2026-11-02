@@ -99,6 +99,7 @@
     font-size:10.5px;font-weight:600;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;
     padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
   tbody tr{cursor:pointer;outline:none}
+  tbody tr.dead{cursor:default}
   tbody tr:hover{background:var(--surface-2)}
   tbody tr.sel{background:var(--accent-soft)}
   tbody tr.sel:hover{background:#fbe9e0}
@@ -117,9 +118,12 @@
   .model{width:100px;font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;
     overflow:hidden;text-overflow:ellipsis}
   .flags{width:118px;text-align:right;padding-right:8px!important}
-  .act{width:56px;text-align:right;padding-right:14px!important}
+  .act{width:104px;text-align:right;padding-right:14px!important;white-space:nowrap}
+  .detbtn{opacity:.6;padding:0 6px!important}
+  tbody tr:hover .detbtn{opacity:1}
   td.c,th.c{text-align:center;width:38px;padding-left:8px!important}
   input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer;margin:0}
+  input[type=checkbox]:disabled{opacity:.3;cursor:default}
 
   .pill{display:inline-flex;align-items:center;height:19px;padding:0 6px;border-radius:5px;
     font-size:10.5px;font-weight:500;border:1px solid transparent;white-space:nowrap;margin-left:4px}
@@ -616,10 +620,9 @@ function render() {
       if (r.current) flags.push('<span class="pill cur">Current</span>');
       if (r.archived) flags.push('<span class="pill arch">Archived</span>');
       if (!r.transcript.found) flags.push('<span class="pill no">No transcript</span>');
-      else if (existsInTarget(r) && r.id !== (tgtA && tgtA.id))
-        flags.push('<span class="pill dup" title="Already present in the target location">Exists</span>');
       const on = S.sel.has(skey(r));
-      return `<tr data-key="${esc(skey(r))}" data-i="${i}" class="${on ? "sel" : ""} ${S.group ? "g-row" : ""}" tabindex="0">
+      return `<tr data-key="${esc(skey(r))}" data-i="${i}"
+        class="${on ? "sel" : ""} ${S.group ? "g-row" : ""} ${inTarget(r) ? "dead" : ""}" tabindex="0">
         <td class="c"><input type="checkbox" ${on ? "checked" : ""} ${inTarget(r) ? "disabled" : ""}></td>
         <td class="c-title">
           <div class="title" title="${esc(r.title)}${r.model ? " · " + esc(r.model) : ""}">${esc(r.title)}</div>
@@ -629,7 +632,9 @@ function render() {
           <div class="id">${acctDot(r.account)}${esc(r.account.slice(0, 8))}</div></td>
         <td class="time" title="${new Date(r.activity || 0).toLocaleString()}">${fmtTime(r.activity)}</td>
         <td class="flags">${flags.join("")}</td>
-        <td class="act">${inTarget(r) ? "" :
+        <td class="act">
+          <button class="btn sm ghost detbtn" data-det="1" title="Open details">Details</button>
+          ${inTarget(r) ? "" :
           '<button class="btn sm ghost rowbtn" data-mig="1" title="Migrate to the target account">→</button>'}</td>
       </tr>`;
     };
@@ -687,9 +692,10 @@ function render() {
       const item = byKey(k);
       const i = +tr.dataset.i;
       tr.onclick = ev => {
+        if (ev.target.closest("[data-det]")) { ev.stopPropagation(); openDrawer(k); return; }
         if (ev.target.closest("[data-mig]")) { ev.stopPropagation(); singleMigrate(k); return; }
         if (ev.target.tagName === "INPUT") return;
-        if (item && inTarget(item)) { openDrawer(k); return; }
+        if (item && inTarget(item)) return;   // nothing to tick here
         if (ev.shiftKey && S.lastIdx >= 0) {
           const [a, b] = [Math.min(S.lastIdx, i), Math.max(S.lastIdx, i)];
           const on = !S.sel.has(k);
@@ -700,7 +706,6 @@ function render() {
         S.lastIdx = i;
         render();
       };
-      tr.ondblclick = () => openDrawer(k);
       tr.onkeydown = ev => {
         const all = [...tbody.querySelectorAll("tr[data-key]")];
         const pos = all.indexOf(tr);
