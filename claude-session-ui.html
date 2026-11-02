@@ -75,9 +75,9 @@
   /* ---------- main ---------- */
   main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)}
 
-  .toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:9px 14px;
+  .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 14px;
     border-bottom:1px solid var(--line);flex:none;background:var(--surface)}
-  .search{position:relative;flex:1 1 190px;max-width:300px}
+  .search{position:relative;flex:1 1 150px;max-width:240px}
   .search input{width:100%;height:30px;padding:0 10px 0 29px;border-radius:7px;border:1px solid var(--line);
     background:var(--surface-2);outline:none}
   .search input:focus{border-color:var(--accent-line);background:#fff;box-shadow:0 0 0 3px rgba(192,96,60,.07)}
@@ -286,7 +286,7 @@
           <option value="timeAsc">Oldest first ↑</option>
           <option value="title">Title A-Z</option>
         </select>
-        <label class="chk"><input type="checkbox" id="hideCur">Hide current account</label>
+        <label class="chk"><input type="checkbox" id="hideCur">Hide current</label>
         <label class="chk"><input type="checkbox" id="groupBox">Group by project</label>
         <div class="vdiv"></div>
         <div class="tgt">
@@ -297,6 +297,7 @@
         </div>
         <div class="grow"></div>
         <span class="chip" id="selCount" style="height:24px">None selected</span>
+        <button class="btn" id="syncBtn" title="Copy every session into the target at once">Sync</button>
         <button class="btn primary" id="goBtn" disabled>Migrate</button>
       </div>
 
@@ -802,6 +803,7 @@ $("#allBox").onchange = e => {
 $("#profilesBtn").onclick = () => openProfiles();
 $("#reloadBtn").onclick = () => load();
 $("#goBtn").onclick = () => openConfirm([...S.sel]);
+$("#syncBtn").onclick = () => openSync();
 $("#dClose").onclick = closeDrawer;
 $("#dMigrate").onclick = () => { if (S.drawer) singleMigrate(S.drawer); };
 
@@ -824,11 +826,26 @@ function modal(html, cls) {
 function closeModal() { $("#overlay").classList.remove("on"); }
 $("#overlay").onclick = e => { if (e.target.id === "overlay") closeModal(); };
 
-function openConfirm(keys) {
+function projectTree(items) {
+  const g = new Map();
+  for (const s of items) g.set(s.cwd, (g.get(s.cwd) || 0) + 1);
+  const list = [...g.entries()].sort((a, b) => b[1] - a[1]);
+  return `<div class="plist">` + list.map(([c, n]) => `<div style="display:flex;gap:10px;align-items:center">
+      <span style="flex:0 0 auto">${esc(folderName(c))}</span>
+      <span style="flex:1;min-width:0;font-family:var(--mono);font-size:10px;color:var(--muted);
+        overflow:hidden;text-overflow:ellipsis">${esc(c)}</span>
+      <span style="flex:0 0 auto;color:var(--text-2)">${n}</span>
+    </div>`).join("") + `</div>`;
+}
+
+function openConfirm(keys, opts) {
   if (!keys.length) return;
   const items = keys.map(byKey).filter(Boolean);
-  const preview = items.slice(0, 12).map(s => `<div title="${esc(s.title)}">${esc(s.title)}</div>`).join("");
-  const more = items.length > 12 ? `<div style="color:var(--muted)">… ${items.length - 12} more</div>` : "";
+  const asTree = (opts && opts.tree) || items.length > 30;
+  const preview = asTree ? projectTree(items)
+    : items.slice(0, 12).map(s => `<div title="${esc(s.title)}">${esc(s.title)}</div>`).join("");
+  const more = !asTree && items.length > 12
+    ? `<div style="color:var(--muted)">… ${items.length - 12} more</div>` : "";
   const tgt = profileOf(S.target.profile);
   const a = tgt ? tgt.accounts.find(x => x.id === S.target.account) : null;
   const run = !!(profileOf(S.target.profile) || {}).running;
@@ -848,8 +865,8 @@ function openConfirm(keys) {
         ${multiProfile() ? `Profile <code>${esc(S.target.profile)}</code> / ` : ""}Account <code>${esc((S.target.account || "").slice(0, 8))}</code> / Space <code>${esc((S.target.space || "").slice(0, 8))}</code>
         ${a && a.isCurrent ? '<span class="pill cur" style="margin-left:6px">Current account</span>' : ""}
       </div></div>
-      <div class="kv"><div class="k">Sessions</div><div class="v" style="margin-top:2px">
-        <div class="plist">${preview}${more}</div></div></div>
+      <div class="kv"><div class="k">${asTree ? "Projects" : "Sessions"}</div><div class="v" style="margin-top:2px">
+        ${asTree ? preview : `<div class="plist">${preview}${more}</div>`}</div></div>
       <div class="kv"><div class="k">Note</div><div class="v" style="color:var(--text-2);font-size:12px">
         Only the metadata blob (~40 KB) is copied. The transcript jsonl stays where it is and the source account keeps its copy. You can undo afterwards.
       </div></div>
@@ -877,6 +894,15 @@ function openConfirm(keys) {
   const ob = $("#overwriteBox");
   if (fb) fb.onchange = () => { $("#confirmBtn").disabled = !fb.checked; };
   $("#confirmBtn").onclick = () => doMigrate(keys, !!((fb && fb.checked) || (ob && ob.checked)));
+}
+
+function openSync() {
+  const items = S.snap.sessions.filter(s => !inTarget(s));
+  if (!items.length) {
+    toast("Everything is already in the target location");
+    return;
+  }
+  openConfirm(items.map(skey), { tree: true });
 }
 
 function singleMigrate(k) {
